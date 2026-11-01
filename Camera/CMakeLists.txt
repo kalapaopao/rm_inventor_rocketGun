@@ -10,13 +10,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui videoio)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui videoio)
 find_package(Threads REQUIRED)
-
-add_subdirectory(
-    "${CMAKE_CURRENT_SOURCE_DIR}/../Web"
-    "${CMAKE_CURRENT_BINARY_DIR}/Web"
-)
 
 set(MVS_ROOT "/opt/MVS" CACHE PATH "Hikrobot MVS SDK installation")
 set(MVS_INCLUDE_DIR "${MVS_ROOT}/include")
@@ -51,7 +46,8 @@ target_include_directories(show PRIVATE
 
 target_link_libraries(show PRIVATE
     "${MVS_LIBRARY}"
-    web_stream
+    ${OpenCV_LIBS}
+    Threads::Threads
     ${CMAKE_DL_LIBS}
 )
 
@@ -62,9 +58,3 @@ target_compile_definitions(show PRIVATE
 
 target_compile_options(show PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(show PROPERTIES BUILD_RPATH "${MVS_LIB_DIR}")
-
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tools/checkvid.cpp")
-    add_executable(checkvid "${CMAKE_CURRENT_SOURCE_DIR}/../tools/checkvid.cpp")
-    target_include_directories(checkvid PRIVATE ${OpenCV_INCLUDE_DIRS})
-    target_link_libraries(checkvid PRIVATE ${OpenCV_LIBS})
-endif()

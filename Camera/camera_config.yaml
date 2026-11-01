@@ -4,24 +4,11 @@ camera:
   device_index: 0
   width: 1440
   height: 1080
-  # width: 640
-  # height: 480
   exposure_time: 2500.0
   gain: 9.0
   grab_timeout_ms: 100
   acquisition_frame_rate_enable: 0
   adc_bit_depth: 8
   bayer_quality: 0
-  display_enabled: 1
-  display_fps: 60.0
   window_name: "Hikrobot Camera"
-  # --recording 不带数字时使用；0 表示不自动录像。
   record_seconds: 10.0
-
-# 网页实时流，与 camera 段独立。
-stream:
-  enabled: 1
-  port: 8080
-  width: 960       # 0 表示保持原始宽度。
-  fps: 15.0        # 网页流上限；采集帧率不受此值限制。
-  quality: 65      # JPEG 质量，1~100。
