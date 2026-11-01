@@ -1,0 +1,12 @@
+# Hikrobot USB3 Vision 相机（VID 2bdf）——允许普通用户直接读写设备节点
+#
+# 没有这条规则时，/dev/bus/usb/00X/00Y 的权限是 crw-rw-r-- root root，
+# 普通用户只有读权限，MVS SDK 枚举/打开相机会失败（表现为"未发现海康相机"）。
+#
+# 安装位置：/etc/udev/rules.d/99-hikrobot.rules
+# 生效：sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=usb
+
+SUBSYSTEM=="usb", ATTR{idVendor}=="2bdf", MODE="0666", GROUP="plugdev"
+
+# DFU 模式（固件升级时出现）也一并放开，避免升级流程突然没权限
+SUBSYSTEM=="usb", ATTR{idVendor}=="2bdf", ATTR{idProduct}=="0002", MODE="0666", GROUP="plugdev"

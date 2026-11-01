@@ -1,0 +1,87 @@
+# Third-party references: never include in this repository
+/reference/
+
+# Local IDE configuration and temporary editor files
+/.vscode/
+/.idea/
+/.vs/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# CMake and build artifacts
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+/dist/
+CMakeFiles/
+CMakeCache.txt
+CMakeUserPresets.json
+compile_commands.json
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+Testing/
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dll
+*.dylib
+*.exe
+*.pdb
+
+# Camera SDK runtime logs
+/MvSdkLog/
+*.log
+*.log.*
+
+# Capture output and temporary datasets
+/recordings/
+/Camera/recordings/
+/captures/
+/snapshots/
+/datasets/
+/data/
+/runs/
+/outputs/
+/results/
+*.mp4
+*.avi
+*.mkv
+*.mov
+*.h264
+*.h265
+*.yuv
+*.raw
+
+# Trained model and deployment artifacts
+*.pt
+*.pth
+*.onnx
+*.engine
+*.plan
+*.rknn
+*.tflite
+*.kmodel
+*.ckpt
+*.weights
+*.safetensors
+
+# Local secrets (keep shareable examples)
+.env
+.env.*
+!.env.example
+!.env.template
+
+# Python test and tool cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
