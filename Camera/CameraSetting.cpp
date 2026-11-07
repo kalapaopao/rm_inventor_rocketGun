@@ -5,10 +5,14 @@
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <condition_variable>
+#include <mutex>
 #include <sstream>
+#include <thread>
 #include <utility>
 
 #ifndef DEFAULT_RECORDING_DIR
@@ -16,6 +20,8 @@
 #endif
 
 namespace {
+
+constexpr double kDisplayScale = 0.8;
 
 bool checkResult(const char* operation, int result) {
     if (result == MV_OK) return true;
@@ -38,6 +44,113 @@ private:
     void* handle_;
     MV_FRAME_OUT& frame_;
     bool active_ = true;
+};
+
+void drawMetrics(cv::Mat& image, float pipelineFps, double captureMs) {
+    const int baseline = std::max(24, image.rows - 20);
+    const int lineHeight = 25;
+    const auto draw = [&](const std::string& text, int line) {
+        cv::putText(image, text, cv::Point(10, baseline - lineHeight * line),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0),
+                    2, cv::LINE_AA);
+    };
+    std::ostringstream text;
+    text << "Total FPS: " << std::fixed << std::setprecision(1) << pipelineFps;
+    draw(text.str(), 3);
+    text.str("");
+    text.clear();
+    text << "Capture: " << std::fixed << std::setprecision(1) << captureMs << " ms";
+    draw(text.str(), 2);
+    draw("Algorithm: 0.0 ms", 1);
+    draw("Comm: 0.0 ms", 0);
+}
+
+class OutputWorker {
+public:
+    explicit OutputWorker(const CameraConfig& config) : config_(config) {}
+    ~OutputWorker() { stop(); }
+
+    void start() { worker_ = std::thread(&OutputWorker::loop, this); }
+
+    bool submit(const cv::Mat& frame, float fps, double captureMs) {
+        if (stopRequested_.load(std::memory_order_relaxed)) return false;
+        cv::Mat copy = frame.clone();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            latestFrame_ = std::move(copy);
+            pipelineFps_ = fps;
+            captureMs_ = captureMs;
+            hasFrame_ = true;
+        }
+        condition_.notify_one();
+        return true;
+    }
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        condition_.notify_one();
+        if (worker_.joinable()) worker_.join();
+    }
+
+private:
+    void loop() {
+        VideoRecorder recorder(DEFAULT_RECORDING_DIR, 30.0);
+        bool recorderStarted = false;
+        while (true) {
+            cv::Mat frame;
+            float fps = 0.0F;
+            double captureMs = 0.0;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                condition_.wait(lock, [this] { return hasFrame_ || stopping_; });
+                if (!hasFrame_ && stopping_) break;
+                frame = std::move(latestFrame_);
+                fps = pipelineFps_;
+                captureMs = captureMs_;
+                hasFrame_ = false;
+            }
+
+            if (config_.recordSeconds > 0.0) {
+                if (!recorderStarted) {
+                    if (!recorder.start(frame.size(), frame.channels() != 1)) {
+                        stopRequested_.store(true, std::memory_order_relaxed);
+                        break;
+                    }
+                    recorderStarted = true;
+                }
+                recorder.write(frame);
+            }
+
+            if (config_.displayEnabled) {
+                cv::Mat displayFrame;
+                cv::resize(frame, displayFrame, cv::Size(), kDisplayScale,
+                           kDisplayScale, cv::INTER_AREA);
+                drawMetrics(displayFrame, fps, captureMs);
+                cv::imshow(config_.windowName, displayFrame);
+                const int key = cv::waitKey(1);
+                if (key == 27 || key == 'q' || key == 'Q') {
+                    stopRequested_.store(true, std::memory_order_relaxed);
+                    break;
+                }
+            }
+        }
+        recorder.stop();
+        if (config_.displayEnabled) cv::destroyAllWindows();
+    }
+
+    CameraConfig config_;
+    std::thread worker_;
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    cv::Mat latestFrame_;
+    float pipelineFps_ = 0.0F;
+    double captureMs_ = 0.0;
+    bool hasFrame_ = false;
+    bool stopping_ = false;
+    std::atomic<bool> stopRequested_{false};
 };
 
 }  // namespace
@@ -139,41 +252,19 @@ float CameraSetting::calculateFPS(Clock::time_point startTime,
     return static_cast<float>(static_cast<double>(frameCount) / seconds);
 }
 
-void CameraSetting::displayFPS(cv::Mat& image, float fps) const {
-    std::ostringstream text;
-    text << "FPS: " << std::fixed << std::setprecision(1) << fps;
-    const int baseline = std::max(24, image.rows - 20);
-    cv::putText(image, text.str(), cv::Point(10, baseline),
-                cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0),
-                2, cv::LINE_AA);
+void CameraSetting::displayFPS(cv::Mat& image, float pipelineFps, double captureMs) const {
+    drawMetrics(image, pipelineFps, captureMs);
 }
 
 bool CameraSetting::processFrame(const cv::Mat& frame,
                                  Clock::time_point startTime,
                                  std::uint64_t frameCount,
-                                 VideoRecorder& recorder,
-                                 bool& recorderStarted) {
+                                 float pipelineFps,
+                                 double captureMs) {
     if (frame.empty()) return false;
-
-    if (config_.recordSeconds > 0.0) {
-        if (!recorderStarted) {
-            if (!recorder.start(frame.size(), frame.channels() != 1)) {
-                return false;
-            }
-            recorderStarted = true;
-        }
-        recorder.write(frame);
-    }
-    if (!config_.displayEnabled) return true;
-
-    cv::Mat displayFrame = frame.clone();
-    displayFPS(displayFrame, calculateFPS(startTime, frameCount, Clock::now()));
-    if (config_.displayEnabled) {
-        cv::imshow(config_.windowName, displayFrame);
-        const int key = cv::waitKey(1);
-        if (key == 27 || key == 'q' || key == 'Q') return false;
-    }
-    return true;
+    (void)startTime;
+    (void)frameCount;
+    return outputSink_ ? outputSink_(frame, pipelineFps, captureMs) : true;
 }
 
 bool CameraSetting::run() {
@@ -215,10 +306,17 @@ bool CameraSetting::run() {
         return false;
     }
     grabbing = true;
+    if (!checkResult("Run one-shot white balance",
+                     MV_CC_SetEnumValue(handle, "BalanceWhiteAuto", 2))) {
+        std::cerr << "Warning: one-shot white balance was not accepted.\n";
+    }
     printCameraFrameRateInfo(handle);
 
-    VideoRecorder recorder(DEFAULT_RECORDING_DIR, 30.0);
-    bool recorderStarted = false;
+    OutputWorker output(config_);
+    output.start();
+    outputSink_ = [&output](const cv::Mat& frame, float fps, double captureMs) {
+        return output.submit(frame, fps, captureMs);
+    };
     const auto startTime = Clock::now();
     std::uint64_t frameCount = 0;
     bool success = true;
@@ -228,6 +326,7 @@ bool CameraSetting::run() {
     while (config_.recordSeconds <= 0.0 ||
            std::chrono::duration<double>(Clock::now() - startTime).count() <
                config_.recordSeconds) {
+        const auto captureStart = Clock::now();
         MV_FRAME_OUT frame{};
         const int result = MV_CC_GetImageBuffer(handle, &frame, config_.grabTimeoutMs);
         if (result != MV_OK) {
@@ -273,13 +372,18 @@ bool CameraSetting::run() {
         }
 
         ++frameCount;
-        if (!processFrame(image, startTime, frameCount, recorder, recorderStarted)) {
+        const auto captureEnd = Clock::now();
+        const double captureMs = std::chrono::duration<double, std::milli>(
+            captureEnd - captureStart).count();
+        const float pipelineFps = calculateFPS(startTime, frameCount, captureEnd);
+        if (!processFrame(image, startTime, frameCount, pipelineFps, captureMs)) {
             success = false;
             break;
         }
     }
 
-    recorder.stop();
+    output.stop();
+    outputSink_ = {};
     cleanup();
     std::cout << "Captured " << frameCount << " frames, FPS="
               << calculateFPS(startTime, frameCount, Clock::now()) << '\n';

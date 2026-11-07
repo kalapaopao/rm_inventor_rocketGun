@@ -3,6 +3,7 @@
 #
 #   ./run.sh                预览窗口 + 按 r 录像，q 退出
 #   ./run.sh --recording    按配置 record_seconds 录一段就退出
+#   ./run.sh --calib        相机标定（s 保存 / d 删除 / Esc 结束并标定）
 #   ./run.sh -h             查看程序自己的参数
 #
 # 脚本负责三件环境上的事，程序本身不用管：
@@ -22,13 +23,13 @@ grep -qi microsoft /proc/version 2>/dev/null && IS_WSL=1
 have_camera() { lsusb 2>/dev/null | grep -q '2bdf:'; }
 
 # 已经有一个实例在跑时，第二个只会拿到“设备被占用”，直接拦住。
-RUNNING="$(pgrep -x show 2>/dev/null | tr '\n' ' ')"
+RUNNING="$(pgrep -x 'show|hik_calibration' 2>/dev/null | tr '\n' ' ')"
 if [ -n "${RUNNING// /}" ] && [ -z "${HIKCAM_ALLOW_MULTI:-}" ]; then
   case " $* " in
     *" -h "*|*" --help "*) ;;
     *)
-      echo "[run] 已经有 show 在运行（PID: $RUNNING），相机会被独占。" >&2
-      echo "[run] 先停掉：pkill -x show" >&2
+      echo "[run] 已经有 show / hik_calibration 在运行（PID: $RUNNING），相机会被独占。" >&2
+      echo "[run] 先停掉：pkill -x 'show|hik_calibration'" >&2
       exit 1
       ;;
   esac
@@ -66,6 +67,7 @@ cmake --build "$BUILD" -j"$(nproc)" || exit 1
 
 BIN="$BUILD/Camera/show"
 [ -x "$BIN" ] || { echo "[run] 没找到 $BIN" >&2; exit 1; }
+CALIB_BIN="$BUILD/hik_calibration/hik_calibration"
 
 # ---------- 运行环境 ----------
 ENV_PREFIX=(env)
@@ -78,5 +80,11 @@ if [ "$IS_WSL" -eq 1 ]; then
   [ -f "$BUILD/noreset.so" ] && ENV_PREFIX+=(LD_PRELOAD="$BUILD/noreset.so")
 fi
 ENV_PREFIX+=(LD_LIBRARY_PATH="/opt/MVS/lib/64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}")
+
+# 标定模式：同一个运行环境（usbipd / noreset / MVS 库），跑标定程序而不是预览程序。
+if [ "${1:-}" = "--calib" ]; then
+  [ -x "$CALIB_BIN" ] || { echo "[run] 没找到 $CALIB_BIN" >&2; exit 1; }
+  exec "${ENV_PREFIX[@]}" "$CALIB_BIN"
+fi
 
 exec "${ENV_PREFIX[@]}" "$BIN" "$@"

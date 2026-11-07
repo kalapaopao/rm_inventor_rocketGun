@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include <opencv2/core/mat.hpp>
@@ -39,12 +40,13 @@ private:
     bool processFrame(const cv::Mat& frame,
                       Clock::time_point startTime,
                       std::uint64_t frameCount,
-                      VideoRecorder& recorder,
-                      bool& recorderStarted);
+                      float pipelineFps,
+                      double captureMs);
     float calculateFPS(Clock::time_point startTime,
                        std::uint64_t frameCount,
                        Clock::time_point now) const;
-    void displayFPS(cv::Mat& image, float fps) const;
+    void displayFPS(cv::Mat& image, float pipelineFps, double captureMs) const;
 
     CameraConfig config_;
+    std::function<bool(const cv::Mat&, float, double)> outputSink_;
 };

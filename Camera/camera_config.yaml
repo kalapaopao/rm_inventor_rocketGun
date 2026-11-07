@@ -8,7 +8,7 @@ camera:
   gain: 9.0
   grab_timeout_ms: 100
   acquisition_frame_rate_enable: 0
-  adc_bit_depth: 8
+  adc_bit_depth: 12
   bayer_quality: 0
   window_name: "Hikrobot Camera"
   record_seconds: 10.0

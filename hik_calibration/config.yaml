@@ -1,0 +1,44 @@
+%YAML:1.0
+---
+# 是否采集图片。1 打开摄像头，0 不打开摄像头。
+# 0是你有图片然后做标定
+capture_images: 1
+
+save_dir: "./calibration_images"
+
+# 棋盘格内角点数量，不是方格数量。
+board_width: 11
+board_height: 8
+
+# 单个方格边长，单位米。
+square_size: 0.045
+
+# 相机序号。只有一个 USB 工业相机时填 0。
+camera_index: 0
+
+# 分辨率和偏移。填 0 表示不设置，使用相机当前值。
+image_width: 1440
+image_height: 1080
+offset_x: 0
+offset_y: 0
+
+# 曝光时间，单位微秒。填 -1 表示不设置。
+exposure_time: 50000
+
+# 增益。填 -1 表示不设置。
+gain: 0
+
+# 帧率。填 -1 表示不设置。
+frame_rate: -1
+
+# 显示窗口名。
+window_name: "Hikvision Calibration"
+
+# 最少有效标定图片数量，少于这个数量按 Esc 不会标定。
+min_images: 20
+
+# 按 Esc 结束采图并开始标定。
+# 按 s 保存当前图片。
+# 按 d 删除刚刚保存的图片。
+output_file: "./camera_intrinsics.yaml"
+

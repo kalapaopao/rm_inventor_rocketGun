@@ -50,6 +50,11 @@ Testing/
 /runs/
 /outputs/
 /results/
+
+# Camera calibration images and intrinsics output
+/calibration_images/
+/camera_intrinsics.yaml
+
 *.mp4
 *.avi
 *.mkv
