@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -72,6 +73,13 @@ public:
 
     void start() { worker_ = std::thread(&OutputWorker::loop, this); }
 
+    // 视觉模式：显示/录像只消费 VisionPipeline 的最新结果快照（方案 §5.4），
+    // 与采集、推理线程互不阻塞；必须在 start() 前设置。
+    void setVisionProvider(
+        std::function<bool(vision::VisionResult&)> provider) {
+        visionProvider_ = std::move(provider);
+    }
+
     bool submit(const cv::Mat& frame, float fps, double captureMs) {
         if (stopRequested_.load(std::memory_order_relaxed)) return false;
         cv::Mat copy = frame.clone();
@@ -97,6 +105,15 @@ public:
 
 private:
     void loop() {
+        if (visionProvider_) {
+            visionLoop();
+        } else {
+            legacyLoop();
+        }
+    }
+
+    // 原有路径（vision.enabled=0）：与之前行为一致。
+    void legacyLoop() {
         VideoRecorder recorder(DEFAULT_RECORDING_DIR, 30.0);
         bool recorderStarted = false;
         while (true) {
@@ -141,6 +158,74 @@ private:
         if (config_.displayEnabled) cv::destroyAllWindows();
     }
 
+    // 视觉路径：轮询最新结果快照。没有新帧时短暂休眠，不 busy-wait。
+    // 显示、录像、统计都在这里消费"已处理结果"，不会拖慢采集/推理。
+    void visionLoop() {
+        VideoRecorder recorder(DEFAULT_RECORDING_DIR, 30.0);
+        bool recorderStarted = false;
+        double displayFps = 0.0;
+        std::uint64_t lastSequence = 0;
+        using SteadyClock = std::chrono::steady_clock;
+        SteadyClock::time_point lastDisplay = SteadyClock::now();
+        SteadyClock::time_point lastLog = SteadyClock::now();
+        while (!stopRequested_.load(std::memory_order_relaxed)) {
+            vision::VisionResult result;
+            if (!visionProvider_(result) || result.sequence == lastSequence) {
+                // 没有结果或还是上次消费过的同一份快照：短暂休眠，不 busy-wait。
+                std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                continue;
+            }
+            lastSequence = result.sequence;
+            const auto now = SteadyClock::now();
+            const double dt = std::chrono::duration<double>(now - lastDisplay).count();
+            if (dt > 1e-3) {  // 下限保护：dt 异常小时跳过本次 FPS 平滑
+                displayFps = displayFps > 0.0
+                    ? 0.9 * displayFps + 0.1 * (1.0 / dt)
+                    : 1.0 / dt;
+            }
+            lastDisplay = now;
+            result.stats.displayFps = static_cast<float>(displayFps);
+
+            if (config_.recordSeconds > 0.0) {
+                if (!recorderStarted) {
+                    if (!recorder.start(result.annotated.size(), true)) {
+                        stopRequested_.store(true, std::memory_order_relaxed);
+                        break;
+                    }
+                    recorderStarted = true;
+                }
+                recorder.write(result.annotated);
+            }
+
+            if (config_.displayEnabled) {
+                cv::Mat displayFrame;
+                cv::resize(result.annotated, displayFrame, cv::Size(),
+                           kDisplayScale, kDisplayScale, cv::INTER_AREA);
+                // 管线已在 annotated 上叠加检测框与统计，这里不再画 metrics。
+                cv::imshow(config_.windowName, displayFrame);
+                const int key = cv::waitKey(1);
+                if (key == 27 || key == 'q' || key == 'Q') {
+                    stopRequested_.store(true, std::memory_order_relaxed);
+                    break;
+                }
+            }
+
+            // 周期性记录四类 FPS 与延迟（方案 §9.6 / §11.5 / 验收标准）。
+            if (std::chrono::duration<double>(now - lastLog).count() >= 2.0) {
+                lastLog = now;
+                const vision::VisionStats& s = result.stats;
+                std::cout << "[STATS] cap=" << s.captureFps << " inf="
+                          << s.inferenceFps << " disp=" << s.displayFps
+                          << " | e2e p50=" << s.e2eLatencyP50Ms << "ms p95="
+                          << s.e2eLatencyP95Ms << "ms | inf_ms="
+                          << s.inferMs << " drop=" << s.droppedFrames
+                          << " lost=" << s.trackingLostCount << '\n';
+            }
+        }
+        recorder.stop();
+        if (config_.displayEnabled) cv::destroyAllWindows();
+    }
+
     CameraConfig config_;
     std::thread worker_;
     std::mutex mutex_;
@@ -151,6 +236,7 @@ private:
     bool hasFrame_ = false;
     bool stopping_ = false;
     std::atomic<bool> stopRequested_{false};
+    std::function<bool(vision::VisionResult&)> visionProvider_;
 };
 
 }  // namespace
@@ -203,6 +289,100 @@ bool CameraConfig::load(const std::string& path) {
     bayerQuality = static_cast<unsigned int>(bayerQualityValue);
     adcBitDepth = static_cast<unsigned int>(adcBitDepthValue);
     acquisitionFrameRateEnable = frameRateEnableValue == 1;
+
+#ifdef RM_ENABLE_VISION
+    // vision 配置块（方案 §8）。节点不存在时保持默认 enabled=0 纯取流行为。
+    const cv::FileNode visionNode = storage["vision"];
+    if (!visionNode.empty()) {
+        vision::VisionConfig& v = vision;
+        if (!visionNode["enabled"].empty()) {
+            int enabled = v.enabled ? 1 : 0;
+            visionNode["enabled"] >> enabled;
+            v.enabled = enabled != 0;
+        }
+        if (!visionNode["backend"].empty()) visionNode["backend"] >> v.backend;
+        if (!visionNode["model_path"].empty()) visionNode["model_path"] >> v.modelPath;
+        if (!visionNode["input_width"].empty()) visionNode["input_width"] >> v.inputWidth;
+        if (!visionNode["input_height"].empty()) visionNode["input_height"] >> v.inputHeight;
+        if (!visionNode["confidence_threshold"].empty()) {
+            visionNode["confidence_threshold"] >> v.confidenceThreshold;
+        }
+        if (!visionNode["nms_threshold"].empty()) {
+            visionNode["nms_threshold"] >> v.nmsThreshold;
+        }
+        if (!visionNode["enable_refine"].empty()) {
+            int refine = v.enableRefine ? 1 : 0;
+            visionNode["enable_refine"] >> refine;
+            v.enableRefine = refine != 0;
+        }
+        if (!visionNode["enable_tracker"].empty()) {
+            int tracker = v.enableTracker ? 1 : 0;
+            visionNode["enable_tracker"] >> tracker;
+            v.enableTracker = tracker != 0;
+        }
+        if (!visionNode["prediction_horizon_seconds"].empty()) {
+            visionNode["prediction_horizon_seconds"] >> v.predictionHorizonSeconds;
+        }
+        if (!visionNode["max_prediction_seconds"].empty()) {
+            visionNode["max_prediction_seconds"] >> v.maxPredictionSeconds;
+        }
+        if (!visionNode["lost_timeout_ms"].empty()) {
+            int timeout = v.lostTimeoutMs;
+            visionNode["lost_timeout_ms"] >> timeout;
+            v.lostTimeoutMs = timeout;
+        }
+        if (!visionNode["min_confirm_frames"].empty()) {
+            int frames = v.minConfirmFrames;
+            visionNode["min_confirm_frames"] >> frames;
+            v.minConfirmFrames = frames;
+        }
+        if (!visionNode["enable_serial"].empty()) {
+            int serial = v.enableSerial ? 1 : 0;
+            visionNode["enable_serial"] >> serial;
+            v.enableSerial = serial != 0;
+        }
+        if (!visionNode["serial_port"].empty()) visionNode["serial_port"] >> v.serialPort;
+        if (!visionNode["serial_baud"].empty()) {
+            int baud = v.serialBaud;
+            visionNode["serial_baud"] >> baud;
+            v.serialBaud = baud;
+        }
+        if (!visionNode["serial_period_ms"].empty()) {
+            int period = v.serialPeriodMs;
+            visionNode["serial_period_ms"] >> period;
+            v.serialPeriodMs = period;
+        }
+
+        if (v.enabled && v.modelPath.empty()) {
+            std::cerr << "vision.enabled=1 but vision.model_path is empty\n";
+            return false;
+        }
+        if (v.enabled && v.predictionHorizonSeconds > v.maxPredictionSeconds) {
+            std::cerr << "vision.prediction_horizon_seconds exceeds max_prediction_seconds\n";
+            return false;
+        }
+        // 方案 §8 的示例配置使用 Windows 盘符路径；本程序在 WSL/Linux 运行时
+        // 自动转换为 /mnt/<盘>/... 路径，使同一份配置两端可用。
+        if (v.enabled && v.modelPath.size() >= 3 && v.modelPath[1] == ':' &&
+            (v.modelPath[2] == '/' || v.modelPath[2] == '\\')) {
+            const char drive = static_cast<char>(std::tolower(v.modelPath[0]));
+            std::string converted = "/mnt/";
+            converted += drive;
+            for (size_t i = 2; i < v.modelPath.size(); ++i) {
+                converted += (v.modelPath[i] == '\\') ? '/' : v.modelPath[i];
+            }
+            std::cout << "[Vision] model_path converted: " << converted << '\n';
+            v.modelPath = std::move(converted);
+        }
+    }
+#else
+    if (!storage["vision"].empty()) {
+        std::cerr << "Warning: config has a 'vision' section but this binary was "
+                     "built without the vision pipeline (RM_ENABLE_VISION); "
+                     "running capture-only.\n";
+    }
+#endif
+
     return true;
 }
 
@@ -313,6 +493,38 @@ bool CameraSetting::run() {
     printCameraFrameRateInfo(handle);
 
     OutputWorker output(config_);
+#ifdef RM_ENABLE_VISION
+    // 视觉管线初始化（方案 §9.5）。加载失败必须明确报错并安全退出（验收标准）。
+    if (config_.vision.enabled) {
+        vision_ = std::make_unique<vision::VisionPipeline>(config_.vision);
+        if (!vision_->start()) {
+            std::cerr << "Vision pipeline failed to start; aborting.\n";
+            vision_.reset();
+            cleanup();
+            return false;
+        }
+        if (config_.vision.enableSerial && !config_.vision.serialPort.empty()) {
+            serial_ = std::make_unique<vision::SerialOutput>();
+            vision::SerialConfig serialConfig;
+            serialConfig.port = config_.vision.serialPort;
+            serialConfig.baud = config_.vision.serialBaud;
+            serialConfig.periodMs = config_.vision.serialPeriodMs;
+            if (!serial_->start(serialConfig, [this](vision::VisionResult& r) {
+                    return vision_ != nullptr && vision_->getLatestResult(r);
+                })) {
+                // 串口打不开只告警，不拖死采集（方案 §10）。
+                std::cerr << "Warning: serial output failed to start on "
+                          << config_.vision.serialPort << '\n';
+                serial_.reset();
+            }
+        }
+        output.setVisionProvider([this](vision::VisionResult& r) {
+            return vision_ != nullptr && vision_->getLatestResult(r);
+        });
+        std::cout << "Vision pipeline active: backend=" << config_.vision.backend
+                  << " model=" << config_.vision.modelPath << '\n';
+    }
+#endif
     output.start();
     outputSink_ = [&output](const cv::Mat& frame, float fps, double captureMs) {
         return output.submit(frame, fps, captureMs);
@@ -320,6 +532,8 @@ bool CameraSetting::run() {
     const auto startTime = Clock::now();
     std::uint64_t frameCount = 0;
     bool success = true;
+    int consecutiveGrabFailures = 0;  // usbipd/USB 抖动下单次超时不该致命退出
+    constexpr int kMaxConsecutiveGrabFailures = 50;
 
     std::cout << "Camera started; recording for " << config_.recordSeconds
               << " seconds." << '\n';
@@ -330,11 +544,23 @@ bool CameraSetting::run() {
         MV_FRAME_OUT frame{};
         const int result = MV_CC_GetImageBuffer(handle, &frame, config_.grabTimeoutMs);
         if (result != MV_OK) {
-            std::cerr << "Get image buffer failed, error = 0x"
-                      << std::hex << result << std::dec << '\n';
-            success = false;
-            break;
+            // 单次超时（如 0x80000007）可能是 usbipd/USB 抖动：告警并重试，
+            // 连续超过阈值才判定相机链路失效。
+            ++consecutiveGrabFailures;
+            if (consecutiveGrabFailures == 1 || consecutiveGrabFailures % 10 == 0) {
+                std::cerr << "Get image buffer failed, error = 0x" << std::hex
+                          << result << std::dec << " (consecutive "
+                          << consecutiveGrabFailures << ")\n";
+            }
+            if (consecutiveGrabFailures >= kMaxConsecutiveGrabFailures) {
+                std::cerr << "Grab failed " << consecutiveGrabFailures
+                          << " times in a row; aborting.\n";
+                success = false;
+                break;
+            }
+            continue;
         }
+        consecutiveGrabFailures = 0;
 
         ImageBufferGuard guard(handle, frame);
         const MV_FRAME_OUT_INFO_EX& info = frame.stFrameInfo;
@@ -376,12 +602,24 @@ bool CameraSetting::run() {
         const double captureMs = std::chrono::duration<double, std::milli>(
             captureEnd - captureStart).count();
         const float pipelineFps = calculateFPS(startTime, frameCount, captureEnd);
+#ifdef RM_ENABLE_VISION
+        if (vision_) {
+            // 推理线程只拿最新帧：移动所有权避免整帧复制（方案 §5.1/§5.2）。
+            // 显示/录像改由 OutputWorker 的 visionLoop 消费管线结果。
+            vision_->submitFrame(std::move(image), captureEnd, pipelineFps);
+            continue;
+        }
+#endif
         if (!processFrame(image, startTime, frameCount, pipelineFps, captureMs)) {
             success = false;
             break;
         }
     }
 
+#ifdef RM_ENABLE_VISION
+    if (serial_) serial_->stop();
+    if (vision_) vision_->stop();
+#endif
     output.stop();
     outputSink_ = {};
     cleanup();

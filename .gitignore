@@ -1,6 +1,9 @@
 # Third-party references: never include in this repository
 /reference/
 
+# Third-party binaries (ONNX Runtime release package)
+/third_party/
+
 # Local IDE configuration and temporary editor files
 /.vscode/
 /.idea/

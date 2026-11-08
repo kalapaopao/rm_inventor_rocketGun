@@ -1,4 +1,4 @@
-﻿# Hikrobot camera core (Linux / WSL)
+# Hikrobot camera core (Linux / WSL)
 
 当前程序只保留海康 MVS 相机的核心链路：读取 YAML、打开相机、采集图像、计算 FPS、`putText`、`imshow`，以及可选的 10 秒录像。
 
@@ -70,4 +70,18 @@ camera:
 - Linux/WSL，CMake 3.16+
 - OpenCV：core、imgproc、highgui、videoio
 - Hikrobot MVS SDK，默认安装在 `/opt/MVS`
+
+## 视觉管线（可选）
+
+YOLO26 目标检测 + ROI 复筛 + 卡尔曼跟踪见 `Vision/` 与
+`docs/海康相机目标识别接入方案.md`。配置在 `camera_config.yaml` 的 `vision:` 块：
+
+- `enabled: 0`（默认）：程序行为与纯取流完全一致；
+- `enabled: 1`：需要 ONNX Runtime C++ 包（默认路径
+  `third_party/onnxruntime-linux-x64-1.31.1`，可用
+  `-DONNXRUNTIME_ROOT=/path` 覆盖）。缺包时 `show` 仍编译为纯取流程序；
+- `prediction_horizon_seconds` 等预测参数修改后无需重新编译；
+- 单图推理测试：`build/Vision/vision_single_test <model.onnx> <image> [conf]`；
+- `enable_serial: 1` 时按 `serial_port` 固定周期发送目标状态
+  （帧格式见 `Vision/SerialOutput.hpp` 注释，默认关闭）。
 

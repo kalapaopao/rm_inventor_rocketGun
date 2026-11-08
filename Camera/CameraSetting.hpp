@@ -1,12 +1,17 @@
-﻿#pragma once
+#pragma once
 
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 
 #include <opencv2/core/mat.hpp>
 #include "VideoRecorder.hpp"
+// VisionResult 等结构体为纯头文件定义，不依赖推理库，可无条件包含；
+// 只有 VisionPipeline/SerialOutput 的实例化需要 RM_ENABLE_VISION（链接 vision_core）。
+#include "VisionPipeline.hpp"
+#include "SerialOutput.hpp"
 
 struct CameraConfig {
     unsigned int deviceIndex = 0;
@@ -21,6 +26,10 @@ struct CameraConfig {
     bool displayEnabled = false;
     std::string windowName = "Hikrobot Camera";
     double recordSeconds = 0.0;
+
+#ifdef RM_ENABLE_VISION
+    vision::VisionConfig vision;  // 默认 enabled=false，行为与原纯取流一致
+#endif
 
     bool load(const std::string& path);
 };
@@ -49,4 +58,10 @@ private:
 
     CameraConfig config_;
     std::function<bool(const cv::Mat&, float, double)> outputSink_;
+
+#ifdef RM_ENABLE_VISION
+    // 视觉管线与串口输出：vision.enabled=1 时才创建（方案 §8/§12）。
+    std::unique_ptr<vision::VisionPipeline> vision_;
+    std::unique_ptr<vision::SerialOutput> serial_;
+#endif
 };
