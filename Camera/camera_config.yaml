@@ -14,16 +14,10 @@ camera:
   record_seconds: 60.0
 
 # 视觉管线（docs/海康相机目标识别接入方案.md §8）。
-# enabled: 1 时启用推理叠框；0 时行为与纯取流完全一致。
+# enabled: 1 时启用传统圆灯检测；0 时保持纯取流。
 vision:
   enabled: 1
-  backend: "onnxruntime_cpu"
-  model_path: "D:/study/LicheeRV/resouce/dataset_raw/gc4653_20261027_session_3201/model/best.onnx"
-  input_width: 640
-  input_height: 640
-  confidence_threshold: 0.35
-  nms_threshold: 0.45
-  enable_refine: 1
+  backend: "traditional"
   calibration:
     enabled: 1
     file: "../camera_intrinsics.yaml" # relative to this config, not process cwd
@@ -31,8 +25,9 @@ vision:
     hue_min: 35
     hue_max: 85
     saturation_min: 60
-    value_min: 60
+    value_min: 160
     min_area_px: 8.0
+    max_area_px: 100000.0
     min_circularity: 0.65
     min_axis_ratio: 0.65
   enable_tracker: 1

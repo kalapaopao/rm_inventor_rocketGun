@@ -8,8 +8,6 @@
 #include <sstream>
 
 #include <opencv2/imgproc.hpp>
-#include "OnnxRuntimeBackend.hpp"
-#include "Preprocess.hpp"
 #include "../Camera/AimOverlay.hpp"
 
 namespace vision {
@@ -33,7 +31,7 @@ void drawOverlay(cv::Mat& image, const VisionResult& result) {
                            cv::Scalar(0,255,255), cv::MARKER_CROSS, 10, 1);
         }
         std::ostringstream label;
-        label << std::fixed << std::setprecision(2) << d.score;
+        label << "area " << std::fixed << std::setprecision(0) << d.score;
         cv::putText(image, label.str(),
                     cv::Point(static_cast<int>(d.x1),
                               std::max(12, static_cast<int>(d.y1) - 6)),
@@ -61,13 +59,13 @@ void drawOverlay(cv::Mat& image, const VisionResult& result) {
     };
     std::ostringstream t;
     t << std::fixed << std::setprecision(1)
-      << "Cap " << s.captureFps << " Inf " << s.inferenceFps << " Disp "
+      << "Cap " << s.captureFps << " Detect " << s.detectionFps << " Disp "
       << s.displayFps << " drop " << s.droppedFrames;
     line(0, t.str());
     t.str("");
     t << std::fixed << std::setprecision(1)
       << "e2e p50 " << s.e2eLatencyP50Ms << " p95 " << s.e2eLatencyP95Ms
-      << " ms  inf " << s.inferMs << " ms";
+      << " ms  detect " << s.detectMs << " ms";
     line(1, t.str());
     t.str("");
     t << "track " << (result.target.confirmed ? "OK" : "--")
@@ -80,17 +78,12 @@ void drawOverlay(cv::Mat& image, const VisionResult& result) {
 
 VisionPipeline::VisionPipeline(VisionConfig config)
     : config_(std::move(config)) {
-    if (config_.backend != "onnxruntime_cpu") {
-        // 当前只实现了 CPU 后端；其他后端名在 start() 时报错，由调用方退出。
-        std::cout << "[VisionPipeline] unknown backend '" << config_.backend
-                  << "', will report load failure\n";
-    }
 }
 
 VisionPipeline::~VisionPipeline() { stop(); }
 
 bool VisionPipeline::start() {
-    if (config_.backend != "onnxruntime_cpu") {
+    if (config_.backend != "traditional") {
         std::cerr << "[VisionPipeline] unsupported backend: " << config_.backend << '\n';
         return false;
     }
@@ -98,41 +91,11 @@ bool VisionPipeline::start() {
         std::cerr << "[Calibration] invalid intrinsics: " << config_.calibrationFile << '\n';
         return false;
     }
-    backend_ = std::make_unique<OnnxRuntimeBackend>();
-    if (!backend_->load(config_.modelPath)) {
-        std::cerr << "[VisionPipeline] model load failed: " << config_.modelPath << '\n';
-        backend_.reset();
-        return false;
-    }
-    // 模型实际输入尺寸优先于配置值（配置只是期望值）。
-    auto* ort = dynamic_cast<OnnxRuntimeBackend*>(backend_.get());
-    if (ort != nullptr) {
-        if (ort->inputWidth() != config_.inputWidth ||
-            ort->inputHeight() != config_.inputHeight) {
-            std::cout << "[VisionPipeline] model input " << ort->inputWidth() << "x"
-                      << ort->inputHeight() << " overrides config "
-                      << config_.inputWidth << "x" << config_.inputHeight << '\n';
-        }
-    }
-    config_.inputWidth = ort->inputWidth();
-    config_.inputHeight = ort->inputHeight();
     tracker_.configure(config_.trackerConfig());
-
-    // ORT 首次推理要分配内存/跑一遍图优化（实测约 240ms），用空图预热 3 次，
-    // 避免把暖机延迟算进真实帧的 p50/p95。
-    {
-        auto* ortBackend = dynamic_cast<OnnxRuntimeBackend*>(backend_.get());
-        if (ortBackend != nullptr) {
-            cv::Mat warm(ortBackend->inputHeight(), ortBackend->inputWidth(),
-                         CV_32FC3, cv::Scalar(114.0 / 255.0));
-            std::vector<float> warmOut;
-            for (int i = 0; i < 3; ++i) backend_->infer(warm, warmOut);
-        }
-    }
 
     stopping_.store(false);
     worker_ = std::thread(&VisionPipeline::workLoop, this);
-    std::cout << "[VisionPipeline] started, backend=" << backend_->name() << '\n';
+    std::cout << "[VisionPipeline] started, backend=" << config_.backend << '\n';
     return true;
 }
 
@@ -141,7 +104,6 @@ void VisionPipeline::stop() {
     if (stopping_.compare_exchange_strong(expected, true)) {
         pendingCondition_.notify_all();
         if (worker_.joinable()) worker_.join();
-        backend_.reset();
     }
 }
 
@@ -215,53 +177,22 @@ void VisionPipeline::processOne(cv::Mat& frame, Clock::time_point captureTimesta
         publishResult(std::move(invalid));
         return;
     }
-    // ---- 预处理 ----
-    const auto tPre0 = Clock::now();
-    LetterboxParams params;
-    cv::Mat input = letterbox(frame, config_.inputWidth, params);
-    const double preprocessMs =
-        std::chrono::duration<double, std::milli>(Clock::now() - tPre0).count();
-
-    // ---- 推理 ----
-    const auto tInf0 = Clock::now();
-    std::vector<float> output;
-    if (!backend_->infer(input, output)) {
-        return;  // 单帧失败不结束线程，连续失败由外部 stop 处理
+    const auto tDetect = Clock::now();
+    std::vector<Detection> detections = detectGreenLights(frame, config_.greenLight);
+    const double detectMs = std::chrono::duration<double, std::milli>(Clock::now()-tDetect).count();
+    if (lastDetection_.time_since_epoch().count() > 0) {
+        const double dt = std::chrono::duration<double>(tDetect-lastDetection_).count();
+        if (dt > 0) detectionFps_ = detectionFps_ > 0 ?
+            0.9*detectionFps_ + 0.1/dt : 1.0/dt;
     }
-    const double inferMs =
-        std::chrono::duration<double, std::milli>(Clock::now() - tInf0).count();
-    if (lastInfer_.time_since_epoch().count() > 0) {
-        const double dt =
-            std::chrono::duration<double>(tInf0 - lastInfer_).count();
-        if (dt > 0.0) {
-            const double inst = 1.0 / dt;
-            inferenceFps_ = inferenceFps_ > 0.0 ? 0.9 * inferenceFps_ + 0.1 * inst : inst;
-        }
-    }
-    lastInfer_ = tInf0;
-
-    // ---- 解码 + 复筛 + 跟踪 ----
+    lastDetection_ = tDetect;
     const auto tPost0 = Clock::now();
-    std::vector<Detection> detections;
-    decodeEnd2End(output, params, config_.confidenceThreshold, detections);
-
-    for (Detection& d : detections) {
-        d.refinePassed = !config_.enableRefine ||
-                         refineGreenLight(frame, d, config_.greenLight);
-    }
-    // 未通过复筛的框不参与跟踪。
-    std::vector<Detection> valid;
-    valid.reserve(detections.size());
-    for (const Detection& d : detections) {
-        if (d.refinePassed) valid.push_back(d);
-    }
-
     TrackedTarget target;
     if (config_.enableTracker) {
-        target = tracker_.update(valid, captureTimestamp);
+        target = tracker_.update(detections, captureTimestamp);
         if (target.justLost) ++trackingLostCount_;
     }
-    const double refineMs =
+    const double trackingMs =
         std::chrono::duration<double, std::milli>(Clock::now() - tPost0).count();
 
     // ---- 统计与发布 ----
@@ -272,10 +203,9 @@ void VisionPipeline::processOne(cv::Mat& frame, Clock::time_point captureTimesta
 
     VisionResult result;
     result.stats.captureFps = captureFps;
-    result.stats.inferenceFps = static_cast<float>(inferenceFps_);
-    result.stats.preprocessMs = preprocessMs;
-    result.stats.inferMs = inferMs;
-    result.stats.refineMs = refineMs;
+    result.stats.detectionFps = static_cast<float>(detectionFps_);
+    result.stats.detectMs = detectMs;
+    result.stats.trackingMs = trackingMs;
     result.stats.droppedFrames =
         droppedFrames_.load(std::memory_order_relaxed);  // 累计值
     result.stats.trackingLostCount = trackingLostCount_;

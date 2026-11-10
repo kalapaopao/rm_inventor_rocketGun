@@ -11,53 +11,50 @@ namespace vision {
 
 // Initial conservative thresholds; tune with real camera footage, not FPS alone.
 struct GreenLightConfig {
-    int hueMin = 35, hueMax = 85, saturationMin = 60, valueMin = 60;
-    double minArea = 8.0, minCircularity = 0.65, minAxisRatio = 0.65;
+    int hueMin = 35, hueMax = 85, saturationMin = 60, valueMin = 160;
+    double minArea = 8.0, maxArea = 100000.0, minCircularity = 0.65, minAxisRatio = 0.65;
 };
 
-inline bool refineGreenLight(const cv::Mat& image, Detection& detection,
-                            const GreenLightConfig& config) {
-    if (image.type() != CV_8UC3) return false;
-    if (!std::isfinite(detection.x1) || !std::isfinite(detection.x2) ||
-        !std::isfinite(detection.y1) || !std::isfinite(detection.y2) ||
-        detection.x2 <= detection.x1 || detection.y2 <= detection.y1) return false;
-    // Clamp in floating point before integer conversion (malformed model output).
-    const cv::Rect roi = cv::Rect(
-        cv::Point(static_cast<int>(std::floor(std::clamp(detection.x1, 0.0F, float(image.cols)))),
-                  static_cast<int>(std::floor(std::clamp(detection.y1, 0.0F, float(image.rows))))),
-        cv::Point(static_cast<int>(std::ceil(std::clamp(detection.x2, 0.0F, float(image.cols)))),
-                  static_cast<int>(std::ceil(std::clamp(detection.y2, 0.0F, float(image.rows)))))) &
-        cv::Rect(0, 0, image.cols, image.rows);
-    if (roi.width < 3 || roi.height < 3) return false;
+// Full-frame traditional detector: green luminous mask -> external contours ->
+// area/circularity/ellipse-axis gates -> fitted light centres. No trained model.
+inline std::vector<Detection> detectGreenLights(const cv::Mat& image,
+                                               const GreenLightConfig& config) {
+    std::vector<Detection> lights;
+    if (image.type() != CV_8UC3) return lights;
     cv::Mat hsv, mask;
-    cv::cvtColor(image(roi), hsv, cv::COLOR_BGR2HSV);
+    cv::cvtColor(image, hsv, cv::COLOR_BGR2HSV);
     cv::inRange(hsv, cv::Scalar(config.hueMin, config.saturationMin, config.valueMin),
                 cv::Scalar(config.hueMax, 255, 255), mask);
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-    double bestArea = 0.0;
-    detection.lightRefined = false;
     for (const auto& contour : contours) {
         const double area = cv::contourArea(contour);
         const double perimeter = cv::arcLength(contour, true);
-        if (area < config.minArea || perimeter <= 0.0 || contour.size() < 5) continue;
+        if (area < config.minArea || area > config.maxArea || perimeter <= 0 || contour.size() < 5) continue;
         const auto bounds = cv::boundingRect(contour);
-        // Reject clipped shapes: their centre and circularity are unreliable.
-        if (bounds.x <= 0 || bounds.y <= 0 || bounds.br().x >= roi.width ||
-            bounds.br().y >= roi.height) continue;
+        if (bounds.x <= 0 || bounds.y <= 0 || bounds.br().x >= image.cols ||
+            bounds.br().y >= image.rows) continue;
         const double circularity = 4.0 * CV_PI * area / (perimeter * perimeter);
+        if (circularity < config.minCircularity) continue;
         const auto ellipse = cv::fitEllipse(contour);
         const double major = std::max(ellipse.size.width, ellipse.size.height);
         const double minor = std::min(ellipse.size.width, ellipse.size.height);
-        if (circularity < config.minCircularity || major <= 0 ||
-            minor / major < config.minAxisRatio || area <= bestArea) continue;
-        bestArea = area;
-        detection.lightX = ellipse.center.x + roi.x;
-        detection.lightY = ellipse.center.y + roi.y;
-        detection.lightRadius = static_cast<float>((major + minor) * 0.25);
-        detection.lightRefined = true;
+        if (major <= 0 || minor/major < config.minAxisRatio) continue;
+        Detection light;
+        light.x1 = bounds.x; light.y1 = bounds.y;
+        light.x2 = bounds.br().x; light.y2 = bounds.br().y;
+        light.score = static_cast<float>(area); // contour area, NOT model confidence
+        light.lightX = ellipse.center.x; light.lightY = ellipse.center.y;
+        light.lightRadius = static_cast<float>((major+minor)*0.25);
+        light.lightRefined = true; light.refinePassed = true;
+        lights.push_back(light);
     }
-    return detection.lightRefined;
+    // First acquisition prefers the largest qualifying light. Tracking associates
+    // subsequent frames by position, so contour enumeration order is irrelevant.
+    std::sort(lights.begin(), lights.end(), [](const Detection& a, const Detection& b) {
+        return a.score > b.score;
+    });
+    return lights;
 }
 
 class CameraGeometry {

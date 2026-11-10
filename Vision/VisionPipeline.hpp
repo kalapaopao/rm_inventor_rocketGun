@@ -1,9 +1,9 @@
 #pragma once
 
-// VisionPipeline（方案 §4/§5）：推理、复筛、跟踪总流程。
+// VisionPipeline：传统绿色圆灯检测、跟踪与标定视线角。
 // - 采集线程调用 submitFrame()（非阻塞，只有最新一帧待处理，
 //   新帧到达覆盖旧帧并计入 droppedFrames，保证推理变慢时延迟不增长）；
-// - 独立工作线程完成 letterbox -> 推理 -> 解码 -> ROI 复筛 -> 卡尔曼跟踪；
+// - 独立工作线程完成全图绿色分割 -> 圆形筛选 -> 灯心拟合 -> 卡尔曼跟踪；
 // - getLatestResult() 供显示/录像/串口线程取"最新结果"快照，互相不阻塞。
 // 相机代码只依赖本类，不接触任何推理库 API（方案 §6）。
 
@@ -18,7 +18,6 @@
 
 #include <opencv2/core/mat.hpp>
 #include "DetectionTypes.hpp"
-#include "InferenceBackend.hpp"
 #include "TargetTracker.hpp"
 #include "TargetGeometry.hpp"
 
@@ -26,16 +25,10 @@ namespace vision {
 
 struct VisionConfig {
     bool enabled = false;
-    std::string backend = "onnxruntime_cpu";
-    std::string modelPath;
-    int inputWidth = 640;
-    int inputHeight = 640;
-    float confidenceThreshold = 0.35F;
-    float nmsThreshold = 0.45F;   // 端到端模型内置 NMS，保留字段仅为配置完整
+    std::string backend = "traditional";
     bool calibrationEnabled = false;
     std::string calibrationFile;
     GreenLightConfig greenLight;
-    bool enableRefine = true;
     bool enableTracker = true;
     double predictionHorizonSeconds = 8.0;
     double maxPredictionSeconds = 10.0;
@@ -70,7 +63,7 @@ public:
     VisionPipeline(const VisionPipeline&) = delete;
     VisionPipeline& operator=(const VisionPipeline&) = delete;
 
-    // 加载模型并启动工作线程；失败返回 false（调用方应报错退出）。
+    // 加载可选标定并启动工作线程；失败返回 false。
     bool start();
 
     void stop();
@@ -96,7 +89,6 @@ private:
     VisionConfig config_;
     CameraGeometry geometry_;
 
-    std::unique_ptr<IInferenceBackend> backend_;
     TargetTracker tracker_;
 
     std::thread worker_;
@@ -121,8 +113,8 @@ private:
     std::deque<double> latencySamples_;
 
     // 推理 FPS 平滑值。
-    double inferenceFps_ = 0.0;
-    Clock::time_point lastInfer_{};
+    double detectionFps_ = 0.0;
+    Clock::time_point lastDetection_{};
     std::atomic<std::uint64_t> droppedFrames_{0};  // submitFrame 覆盖旧帧计数
     std::uint64_t trackingLostCount_ = 0;
     std::uint64_t processedFrames_ = 0;

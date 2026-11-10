@@ -10,8 +10,10 @@
 #include "VideoRecorder.hpp"
 // VisionResult 等结构体为纯头文件定义，不依赖推理库，可无条件包含；
 // 只有 VisionPipeline/SerialOutput 的实例化需要 RM_ENABLE_VISION（链接 vision_core）。
+#ifdef RM_ENABLE_VISION
 #include "VisionPipeline.hpp"
 #include "SerialOutput.hpp"
+#endif
 
 struct CameraConfig {
     unsigned int deviceIndex = 0;

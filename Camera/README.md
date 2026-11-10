@@ -73,17 +73,12 @@ camera:
 
 ## 视觉管线（可选）
 
-YOLO26 目标检测 + ROI 复筛 + 卡尔曼跟踪见 `Vision/` 与
-`docs/海康相机目标识别接入方案.md`。配置在 `camera_config.yaml` 的 `vision:` 块：
+当前使用纯 OpenCV 绿色发光圆灯检测，不加载训练模型，也不依赖 ONNX Runtime/NPU。
 
-- `enabled: 0`（默认）：程序行为与纯取流完全一致；
-- `enabled: 1`：需要 ONNX Runtime C++ 包（默认路径
-  `third_party/onnxruntime-linux-x64-1.31.1`，可用
-  `-DONNXRUNTIME_ROOT=/path` 覆盖）。缺包时 `show` 仍编译为纯取流程序；
-- `prediction_horizon_seconds` 等预测参数修改后无需重新编译；
-- 单图推理测试：`build/Vision/vision_single_test <model.onnx> <image> [conf]`；
-- `enable_serial: 1` 时按 `serial_port` 固定周期发送当前水平像素偏差
-  （8字节帧、丢目标/过期停发，默认关闭；详见 `docs/SerialYawProtocol.md`）。
-- 画面左上角显示待发 `yaw_offset_px`、串口状态和最近成功写出的参数；
-  `last TX` 不代表下位机已确认接收。
-
+- `vision.enabled: 1` 启用传统检测，`0` 保持纯取流。
+- `vision.backend` 必须为 `traditional`；旧模型配置需要更新。
+- 在 `vision.green_light` 调整 HSV、面积、圆度与轴比门限。
+- 保留标定灯心角度、5秒可调预测、长十字准心及8字节像素偏差串口。
+- 运行 `./run.sh --window`；串口默认关闭，按 `docs/SerialYawProtocol.md` 对接。
+- 单图检查：`build/Vision/vision_image_test input.jpg build/detected.png`。
+- 详情见 `docs/TraditionalVision.md`，旧模型交接报告仅作历史参考。

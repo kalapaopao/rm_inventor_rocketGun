@@ -13,13 +13,13 @@
 
 namespace vision {
 
-// 单个检测框，坐标为原图像素坐标（已从模型输入空间映射回来）。
+// 圆灯检测框，坐标为原图像素坐标。
 struct Detection {
     float x1 = 0.0F;
     float y1 = 0.0F;
     float x2 = 0.0F;
     float y2 = 0.0F;
-    float score = 0.0F;
+    float score = 0.0F; // contour area, not model confidence
     int classId = 0;
     // 传统视觉复筛是否通过；关闭复筛时恒为 true。
     bool refinePassed = true;
@@ -54,13 +54,12 @@ struct TrackedTarget {
 // 四类 FPS + 延迟分位数（方案 9.6 / 11.5），供显示叠层和串口/日志输出。
 struct VisionStats {
     float captureFps = 0.0F;     // 采集线程产出帧率
-    float inferenceFps = 0.0F;   // 推理线程完成帧率
+    float detectionFps = 0.0F;   // 传统检测完成帧率
     float displayFps = 0.0F;     // 输出线程消费帧率
     double e2eLatencyP50Ms = 0.0; // 采集完成 -> 结果就绪
     double e2eLatencyP95Ms = 0.0;
-    double preprocessMs = 0.0;   // 最近一帧 letterbox 耗时
-    double inferMs = 0.0;        // 最近一帧推理耗时
-    double refineMs = 0.0;       // 最近一帧复筛+跟踪耗时
+    double detectMs = 0.0;        // 最近一帧圆灯检测耗时
+    double trackingMs = 0.0;      // 最近一帧跟踪耗时
     std::uint64_t droppedFrames = 0;  // 推理队列覆盖丢弃的旧帧数
     std::uint64_t trackingLostCount = 0;
     std::uint64_t processedFrames = 0;

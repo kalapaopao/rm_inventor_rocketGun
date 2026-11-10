@@ -60,12 +60,12 @@ target_compile_options(show PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(show PROPERTIES BUILD_RPATH "${MVS_LIB_DIR}")
 
 # Vision 管线为可选依赖：RM_VISION_ENABLED 由根 CMakeLists 配置 Vision 子目录时设置。
-# 缺 ONNX Runtime 或显式关闭时，show 仍然编译为纯取流程序（vision.enabled 恒不生效）。
+# 显式关闭时，show 编译为纯取流程序。传统检测不依赖模型运行库。
 if(RM_VISION_ENABLED)
     target_link_libraries(show PRIVATE vision_core)
     target_compile_definitions(show PRIVATE RM_ENABLE_VISION=1)
     set_target_properties(show PROPERTIES BUILD_RPATH
-        "${MVS_LIB_DIR};${ONNXRUNTIME_LIB_DIR}")
+        "${MVS_LIB_DIR}")
     message(STATUS "Camera: vision pipeline enabled (vision_core linked)")
 else()
     message(STATUS "Camera: vision pipeline disabled, building capture-only binary")

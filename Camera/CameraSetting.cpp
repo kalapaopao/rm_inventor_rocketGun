@@ -88,10 +88,12 @@ public:
 
     // 视觉模式：显示/录像只消费 VisionPipeline 的最新结果快照（方案 §5.4），
     // 与采集、推理线程互不阻塞；必须在 start() 前设置。
+#ifdef RM_ENABLE_VISION
     void setVisionProvider(
         std::function<bool(vision::VisionResult&)> provider) {
         visionProvider_ = std::move(provider);
     }
+#endif
 
     bool submit(const cv::Mat& frame, float fps, double captureMs) {
         if (stopRequested_.load(std::memory_order_relaxed)) return false;
@@ -118,11 +120,13 @@ public:
 
 private:
     void loop() {
+#ifdef RM_ENABLE_VISION
         if (visionProvider_) {
             visionLoop();
-        } else {
-            legacyLoop();
+            return;
         }
+#endif
+        legacyLoop();
     }
 
     // 原有路径（vision.enabled=0）：与之前行为一致。
@@ -173,6 +177,7 @@ private:
 
     // 视觉路径：轮询最新结果快照。没有新帧时短暂休眠，不 busy-wait。
     // 显示、录像、统计都在这里消费"已处理结果"，不会拖慢采集/推理。
+#ifdef RM_ENABLE_VISION
     void visionLoop() {
         VideoRecorder recorder(DEFAULT_RECORDING_DIR, 30.0);
         bool recorderStarted = false;
@@ -252,11 +257,11 @@ private:
             if (std::chrono::duration<double>(now - lastLog).count() >= 2.0) {
                 lastLog = now;
                 const vision::VisionStats& s = result.stats;
-                std::cout << "[STATS] cap=" << s.captureFps << " inf="
-                          << s.inferenceFps << " disp=" << s.displayFps
+                std::cout << "[STATS] cap=" << s.captureFps << " detect="
+                          << s.detectionFps << " disp=" << s.displayFps
                           << " | e2e p50=" << s.e2eLatencyP50Ms << "ms p95="
-                          << s.e2eLatencyP95Ms << "ms | inf_ms="
-                          << s.inferMs << " drop=" << s.droppedFrames
+                          << s.e2eLatencyP95Ms << "ms | detect_ms="
+                          << s.detectMs << " drop=" << s.droppedFrames
                           << " lost=" << s.trackingLostCount << '\n';
             }
         }
@@ -264,8 +269,8 @@ private:
         if (config_.displayEnabled) cv::destroyAllWindows();
     }
 
-#ifdef RM_ENABLE_VISION
     std::function<vision::SerialStatus()> serialStatusProvider_;
+    std::function<bool(vision::VisionResult&)> visionProvider_;
 #endif
     CameraConfig config_;
     std::thread worker_;
@@ -277,7 +282,6 @@ private:
     bool hasFrame_ = false;
     bool stopping_ = false;
     std::atomic<bool> stopRequested_{false};
-    std::function<bool(vision::VisionResult&)> visionProvider_;
 };
 
 }  // namespace
@@ -356,12 +360,13 @@ bool CameraConfig::load(const std::string& path) {
             if (!green["hue_max"].empty()) green["hue_max"] >> g.hueMax;
             if (!green["saturation_min"].empty()) green["saturation_min"] >> g.saturationMin;
             if (!green["value_min"].empty()) green["value_min"] >> g.valueMin;
+            if (!green["max_area_px"].empty()) green["max_area_px"] >> g.maxArea;
             if (!green["min_area_px"].empty()) green["min_area_px"] >> g.minArea;
             if (!green["min_circularity"].empty()) green["min_circularity"] >> g.minCircularity;
             if (!green["min_axis_ratio"].empty()) green["min_axis_ratio"] >> g.minAxisRatio;
             if (g.hueMin < 0 || g.hueMax > 179 || g.hueMin > g.hueMax ||
                 g.saturationMin < 0 || g.saturationMin > 255 || g.valueMin < 0 ||
-                g.valueMin > 255 || !std::isfinite(g.minArea) || g.minArea <= 0 ||
+                g.valueMin > 255 || !std::isfinite(g.minArea) || g.minArea <= 0 || !std::isfinite(g.maxArea) || g.maxArea < g.minArea ||
                 !std::isfinite(g.minCircularity) || g.minCircularity <= 0 ||
                 g.minCircularity > 1 || !std::isfinite(g.minAxisRatio) ||
                 g.minAxisRatio <= 0 || g.minAxisRatio > 1) return false;
@@ -372,20 +377,6 @@ bool CameraConfig::load(const std::string& path) {
             v.enabled = enabled != 0;
         }
         if (!visionNode["backend"].empty()) visionNode["backend"] >> v.backend;
-        if (!visionNode["model_path"].empty()) visionNode["model_path"] >> v.modelPath;
-        if (!visionNode["input_width"].empty()) visionNode["input_width"] >> v.inputWidth;
-        if (!visionNode["input_height"].empty()) visionNode["input_height"] >> v.inputHeight;
-        if (!visionNode["confidence_threshold"].empty()) {
-            visionNode["confidence_threshold"] >> v.confidenceThreshold;
-        }
-        if (!visionNode["nms_threshold"].empty()) {
-            visionNode["nms_threshold"] >> v.nmsThreshold;
-        }
-        if (!visionNode["enable_refine"].empty()) {
-            int refine = v.enableRefine ? 1 : 0;
-            visionNode["enable_refine"] >> refine;
-            v.enableRefine = refine != 0;
-        }
         if (!visionNode["enable_tracker"].empty()) {
             int tracker = v.enableTracker ? 1 : 0;
             visionNode["enable_tracker"] >> tracker;
@@ -432,27 +423,11 @@ bool CameraConfig::load(const std::string& path) {
             std::cerr << "Invalid serial timing/port or yaw aim offset\n";
             return false;
         }
-        if (v.enabled && v.modelPath.empty()) {
-            std::cerr << "vision.enabled=1 but vision.model_path is empty\n";
-            return false;
-        }
         if (v.enabled && v.predictionHorizonSeconds > v.maxPredictionSeconds) {
             std::cerr << "vision.prediction_horizon_seconds exceeds max_prediction_seconds\n";
             return false;
         }
-        // 方案 §8 的示例配置使用 Windows 盘符路径；本程序在 WSL/Linux 运行时
-        // 自动转换为 /mnt/<盘>/... 路径，使同一份配置两端可用。
-        if (v.enabled && v.modelPath.size() >= 3 && v.modelPath[1] == ':' &&
-            (v.modelPath[2] == '/' || v.modelPath[2] == '\\')) {
-            const char drive = static_cast<char>(std::tolower(v.modelPath[0]));
-            std::string converted = "/mnt/";
-            converted += drive;
-            for (size_t i = 2; i < v.modelPath.size(); ++i) {
-                converted += (v.modelPath[i] == '\\') ? '/' : v.modelPath[i];
-            }
-            std::cout << "[Vision] model_path converted: " << converted << '\n';
-            v.modelPath = std::move(converted);
-        }
+
     }
 #else
     if (!storage["vision"].empty()) {
@@ -605,7 +580,7 @@ bool CameraSetting::run() {
             return vision_ != nullptr && vision_->getLatestResult(r);
         });
         std::cout << "Vision pipeline active: backend=" << config_.vision.backend
-                  << " model=" << config_.vision.modelPath << '\n';
+                   << '\n';
     }
 #endif
     output.start();
