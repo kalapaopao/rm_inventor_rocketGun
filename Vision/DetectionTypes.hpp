@@ -24,8 +24,10 @@ struct Detection {
     // 传统视觉复筛是否通过；关闭复筛时恒为 true。
     bool refinePassed = true;
 
-    float centerX() const { return (x1 + x2) * 0.5F; }
-    float centerY() const { return (y1 + y2) * 0.5F; }
+    bool lightRefined = false;
+    float lightX = 0, lightY = 0, lightRadius = 0;
+    float centerX() const { return lightRefined ? lightX : (x1 + x2) * 0.5F; }
+    float centerY() const { return lightRefined ? lightY : (y1 + y2) * 0.5F; }
     float width() const { return x2 - x1; }
     float height() const { return y2 - y1; }
 };
@@ -67,10 +69,15 @@ struct VisionStats {
 // 推理线程对外发布的"最新结果"：叠框图 + 检测 + 跟踪状态 + 统计。
 // 输出线程（显示/录像/串口）只读取这一份快照，不阻塞采集和推理。
 struct VisionResult {
+    bool yawOffsetValid = false;
+    double yawOffsetPixels = 0; // current filtered light x - (raw image centre + offset)
     cv::Mat annotated;           // BGR 叠框图（与被处理帧同一时刻）
     std::vector<Detection> detections;
     TrackedTarget target;
     VisionStats stats;
+    bool currentAnglesValid = false, futureAnglesValid = false;
+    // Optical frame, radians: right/down positive. Serial remains raw pixels.
+    double currentYaw = 0, currentPitch = 0, futureYaw = 0, futurePitch = 0;
     // 该帧完成采集转换的时刻，作为端到端延迟的起点。
     std::chrono::steady_clock::time_point captureTimestamp{};
     // 每发布一次递增。消费者用序号区分"新结果"与"上次读过的同一份快照"，

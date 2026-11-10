@@ -1,4 +1,8 @@
 #include "CameraSetting.hpp"
+#include "AimOverlay.hpp"
+#ifdef RM_ENABLE_VISION
+#include "../Vision/SerialOverlay.hpp"
+#endif
 
 #include <MvCameraControl.h>
 #include <opencv2/highgui.hpp>
@@ -8,6 +12,8 @@
 #include <atomic>
 #include <cctype>
 #include <cstring>
+#include <cmath>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <condition_variable>
@@ -48,6 +54,7 @@ private:
 };
 
 void drawMetrics(cv::Mat& image, float pipelineFps, double captureMs) {
+    drawCentreCrosshair(image);
     const int baseline = std::max(24, image.rows - 20);
     const int lineHeight = 25;
     const auto draw = [&](const std::string& text, int line) {
@@ -70,7 +77,13 @@ class OutputWorker {
 public:
     explicit OutputWorker(const CameraConfig& config) : config_(config) {}
     ~OutputWorker() { stop(); }
+    bool stopRequested() const { return stopRequested_.load(std::memory_order_relaxed); }
 
+#ifdef RM_ENABLE_VISION
+    void setSerialProvider(std::function<vision::SerialStatus()> provider) {
+        serialStatusProvider_ = std::move(provider);
+    }
+#endif
     void start() { worker_ = std::thread(&OutputWorker::loop, this); }
 
     // 视觉模式：显示/录像只消费 VisionPipeline 的最新结果快照（方案 §5.4），
@@ -168,14 +181,39 @@ private:
         using SteadyClock = std::chrono::steady_clock;
         SteadyClock::time_point lastDisplay = SteadyClock::now();
         SteadyClock::time_point lastLog = SteadyClock::now();
+        SteadyClock::time_point lastPanelRefresh{};
         while (!stopRequested_.load(std::memory_order_relaxed)) {
             vision::VisionResult result;
-            if (!visionProvider_(result) || result.sequence == lastSequence) {
+            if (!visionProvider_(result)) {
                 // 没有结果或还是上次消费过的同一份快照：短暂休眠，不 busy-wait。
                 std::this_thread::sleep_for(std::chrono::milliseconds(4));
                 continue;
             }
+            if (result.sequence == lastSequence) {
+                // Keep TX/error/staleness visible even when inference stops.
+                // This is a UI refresh only: never record/count a duplicate result.
+                const auto now = SteadyClock::now();
+                if (config_.displayEnabled && !result.annotated.empty() &&
+                    now-lastPanelRefresh >= std::chrono::milliseconds(100)) {
+                    cv::Mat panel = result.annotated.clone(), display;
+                    const auto status = serialStatusProvider_ ? serialStatusProvider_() : vision::SerialStatus{};
+                    vision::drawSerialPanel(panel, result, config_.vision.enableSerial,
+                                            config_.vision.serialMaxAgeMs, status);
+                    cv::resize(panel, display, {}, kDisplayScale, kDisplayScale, cv::INTER_AREA);
+                    cv::imshow(config_.windowName, display);
+                    const int key = cv::waitKey(1);
+                    if (key == 27 || key == 'q' || key == 'Q') stopRequested_.store(true);
+                    lastPanelRefresh = now;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                continue;
+            }
             lastSequence = result.sequence;
+            if (result.annotated.empty()) continue;
+            result.annotated = result.annotated.clone(); // Never modify shared pipeline snapshots.
+            const auto status = serialStatusProvider_ ? serialStatusProvider_() : vision::SerialStatus{};
+            vision::drawSerialPanel(result.annotated, result, config_.vision.enableSerial,
+                                    config_.vision.serialMaxAgeMs, status);
             const auto now = SteadyClock::now();
             const double dt = std::chrono::duration<double>(now - lastDisplay).count();
             if (dt > 1e-3) {  // 下限保护：dt 异常小时跳过本次 FPS 平滑
@@ -226,6 +264,9 @@ private:
         if (config_.displayEnabled) cv::destroyAllWindows();
     }
 
+#ifdef RM_ENABLE_VISION
+    std::function<vision::SerialStatus()> serialStatusProvider_;
+#endif
     CameraConfig config_;
     std::thread worker_;
     std::mutex mutex_;
@@ -295,6 +336,36 @@ bool CameraConfig::load(const std::string& path) {
     const cv::FileNode visionNode = storage["vision"];
     if (!visionNode.empty()) {
         vision::VisionConfig& v = vision;
+        const auto calibration = visionNode["calibration"];
+        if (!calibration.empty()) {
+            int enabled = 0;
+            calibration["enabled"] >> enabled;
+            v.calibrationEnabled = enabled != 0;
+            calibration["file"] >> v.calibrationFile;
+            if (v.calibrationEnabled) {
+                if (v.calibrationFile.empty()) return false;
+                std::filesystem::path file(v.calibrationFile);
+                if (file.is_relative()) file = std::filesystem::path(path).parent_path() / file;
+                v.calibrationFile = file.lexically_normal().string();
+            }
+        }
+        const auto green = visionNode["green_light"];
+        if (!green.empty()) {
+            auto& g = v.greenLight;
+            if (!green["hue_min"].empty()) green["hue_min"] >> g.hueMin;
+            if (!green["hue_max"].empty()) green["hue_max"] >> g.hueMax;
+            if (!green["saturation_min"].empty()) green["saturation_min"] >> g.saturationMin;
+            if (!green["value_min"].empty()) green["value_min"] >> g.valueMin;
+            if (!green["min_area_px"].empty()) green["min_area_px"] >> g.minArea;
+            if (!green["min_circularity"].empty()) green["min_circularity"] >> g.minCircularity;
+            if (!green["min_axis_ratio"].empty()) green["min_axis_ratio"] >> g.minAxisRatio;
+            if (g.hueMin < 0 || g.hueMax > 179 || g.hueMin > g.hueMax ||
+                g.saturationMin < 0 || g.saturationMin > 255 || g.valueMin < 0 ||
+                g.valueMin > 255 || !std::isfinite(g.minArea) || g.minArea <= 0 ||
+                !std::isfinite(g.minCircularity) || g.minCircularity <= 0 ||
+                g.minCircularity > 1 || !std::isfinite(g.minAxisRatio) ||
+                g.minAxisRatio <= 0 || g.minAxisRatio > 1) return false;
+        }
         if (!visionNode["enabled"].empty()) {
             int enabled = v.enabled ? 1 : 0;
             visionNode["enabled"] >> enabled;
@@ -353,6 +424,14 @@ bool CameraConfig::load(const std::string& path) {
             v.serialPeriodMs = period;
         }
 
+        if (!visionNode["serial_max_age_ms"].empty()) visionNode["serial_max_age_ms"] >> v.serialMaxAgeMs;
+        if (!visionNode["yaw_aim_offset_px"].empty()) visionNode["yaw_aim_offset_px"] >> v.yawAimOffsetPx;
+        if (v.enabled && (v.serialPeriodMs <= 0 || v.serialPeriodMs > 1000 ||
+                          v.serialMaxAgeMs <= 0 || !std::isfinite(v.yawAimOffsetPx) ||
+                          (v.enableSerial && v.serialPort.empty()))) {
+            std::cerr << "Invalid serial timing/port or yaw aim offset\n";
+            return false;
+        }
         if (v.enabled && v.modelPath.empty()) {
             std::cerr << "vision.enabled=1 but vision.model_path is empty\n";
             return false;
@@ -509,6 +588,7 @@ bool CameraSetting::run() {
             serialConfig.port = config_.vision.serialPort;
             serialConfig.baud = config_.vision.serialBaud;
             serialConfig.periodMs = config_.vision.serialPeriodMs;
+            serialConfig.maxAgeMs = config_.vision.serialMaxAgeMs;
             if (!serial_->start(serialConfig, [this](vision::VisionResult& r) {
                     return vision_ != nullptr && vision_->getLatestResult(r);
                 })) {
@@ -518,6 +598,9 @@ bool CameraSetting::run() {
                 serial_.reset();
             }
         }
+        output.setSerialProvider([this] {
+            return serial_ ? serial_->status() : vision::SerialStatus{};
+        });
         output.setVisionProvider([this](vision::VisionResult& r) {
             return vision_ != nullptr && vision_->getLatestResult(r);
         });
@@ -537,9 +620,9 @@ bool CameraSetting::run() {
 
     std::cout << "Camera started; recording for " << config_.recordSeconds
               << " seconds." << '\n';
-    while (config_.recordSeconds <= 0.0 ||
+    while (!output.stopRequested() && (config_.recordSeconds <= 0.0 ||
            std::chrono::duration<double>(Clock::now() - startTime).count() <
-               config_.recordSeconds) {
+               config_.recordSeconds)) {
         const auto captureStart = Clock::now();
         MV_FRAME_OUT frame{};
         const int result = MV_CC_GetImageBuffer(handle, &frame, config_.grabTimeoutMs);

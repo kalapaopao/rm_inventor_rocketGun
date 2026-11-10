@@ -1,18 +1,9 @@
 #pragma once
 
-// 串口输出线程（方案 §9.9，默认 enable_serial=0）。
-// 按固定周期发送最新目标状态，不为每个检测结果排队（方案 §5.4）。
-//
-// 帧格式（小端，参照 reference/2024_Dart_Algorithm vision_protocol 的
-// SOF+CRC 风格；因项目未定义正式协议，这是可调整的默认实现）：
-//   [0] 0xA5 SOF
-//   [1] tracking_state: 0=未跟踪 1=跟踪中(预测有效) 2=跟踪中(预测无效)
-//   [2..5] float future_x  (像素，prediction_horizon_seconds 外推)
-//   [6..9] float future_y
-//   [10..13] float current_x
-//   [14..17] float current_y
-//   [18..19] uint16 CRC16(Modbus)，覆盖前 18 字节
-// 共 20 字节。
+// TX-only: 8 bytes FF | int16 yaw_px LE | 00 00 00 00 | 0D.
+// Current filtered pixel offset, right positive. Invalid/stale results send nothing.
+// No checksum in this compatibility protocol. MCU MUST enforce receive timeout.
+// See docs/SerialYawProtocol.md; not compatible with the former 20-byte packet.
 
 #include <atomic>
 #include <functional>
@@ -20,6 +11,9 @@
 #include <thread>
 
 #include "DetectionTypes.hpp"
+#include "SerialProtocol.hpp"
+#include <condition_variable>
+#include <mutex>
 
 namespace vision {
 
@@ -27,6 +21,14 @@ struct SerialConfig {
     std::string port;          // 如 /dev/ttyUSB0；空则不启动
     int baud = 115200;
     int periodMs = 50;         // 固定发送周期
+    int maxAgeMs = 500;
+};
+
+struct SerialStatus {
+    bool running = false;
+    std::uint64_t sent = 0, errors = 0;
+    bool hasLastSent = false;
+    std::int16_t lastYaw = 0;
 };
 
 class SerialOutput {
@@ -46,11 +48,12 @@ public:
 
     bool running() const { return running_.load(); }
     std::uint64_t sentFrames() const { return sentFrames_.load(); }
+    SerialStatus status() const;
 
 private:
     void loop();
     bool openPort();
-    void buildFrame(const VisionResult& result, unsigned char* buf) const;
+    bool writePacket(const YawPacket& packet);
 
     SerialConfig config_;
     ResultProvider provider_;
@@ -60,6 +63,11 @@ private:
     std::atomic<bool> stopRequested_{false};
     std::atomic<std::uint64_t> sentFrames_{0};
     std::atomic<std::uint64_t> sendErrors_{0};
+    mutable std::mutex statusMutex_;
+    bool hasLastSent_ = false;
+    std::int16_t lastYaw_ = 0;
+    std::mutex waitMutex_;
+    std::condition_variable wake_;
 };
 
 }  // namespace vision

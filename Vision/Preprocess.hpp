@@ -73,6 +73,10 @@ inline void decodeEnd2End(const std::vector<float>& output,
     detections.clear();
     for (size_t i = 0; i < rows; ++i) {
         const float* row = &output[i * kFieldsPerRow];
+        // Invalid tensors must never reach ROI integer conversion / fitEllipse.
+        bool finite = true;
+        for (int j = 0; j < kFieldsPerRow; ++j) finite &= std::isfinite(row[j]);
+        if (!finite || row[2] <= row[0] || row[3] <= row[1] || row[5] != 0.0F) continue;
         const float score = row[4];
         if (score < confThreshold) continue;
         const cv::Rect2f box = mapBoxToOriginal(row[0], row[1], row[2], row[3], params);

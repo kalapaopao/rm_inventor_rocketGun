@@ -44,7 +44,7 @@ add_library(vision_core STATIC
     "${CMAKE_CURRENT_SOURCE_DIR}/SerialOutput.cpp"
 )
 
-find_package(OpenCV REQUIRED COMPONENTS videoio video)
+find_package(OpenCV REQUIRED COMPONENTS videoio video calib3d)
 
 target_include_directories(vision_core PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -70,3 +70,11 @@ target_link_libraries(vision_single_test PRIVATE
 set_target_properties(vision_single_test PROPERTIES
     BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib")
 target_compile_options(vision_single_test PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(vision_geometry_test GeometryTest.cpp)
+target_link_libraries(vision_geometry_test PRIVATE vision_core)
+enable_testing()
+add_test(NAME vision_geometry_test COMMAND vision_geometry_test "${CMAKE_SOURCE_DIR}/camera_intrinsics.yaml")
+add_executable(vision_serial_test SerialTest.cpp)
+target_link_libraries(vision_serial_test PRIVATE vision_core)
+add_test(NAME vision_serial_test COMMAND vision_serial_test)

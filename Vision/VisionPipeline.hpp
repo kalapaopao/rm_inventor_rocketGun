@@ -20,6 +20,7 @@
 #include "DetectionTypes.hpp"
 #include "InferenceBackend.hpp"
 #include "TargetTracker.hpp"
+#include "TargetGeometry.hpp"
 
 namespace vision {
 
@@ -31,6 +32,9 @@ struct VisionConfig {
     int inputHeight = 640;
     float confidenceThreshold = 0.35F;
     float nmsThreshold = 0.45F;   // 端到端模型内置 NMS，保留字段仅为配置完整
+    bool calibrationEnabled = false;
+    std::string calibrationFile;
+    GreenLightConfig greenLight;
     bool enableRefine = true;
     bool enableTracker = true;
     double predictionHorizonSeconds = 8.0;
@@ -41,6 +45,8 @@ struct VisionConfig {
     std::string serialPort;      // enable_serial=1 时必填，如 /dev/ttyUSB0
     int serialBaud = 115200;
     int serialPeriodMs = 50;
+    int serialMaxAgeMs = 500;
+    double yawAimOffsetPx = 0; // raw pixels, positive moves aim line right
 
     TrackerConfig trackerConfig() const {
         TrackerConfig c;
@@ -53,15 +59,7 @@ struct VisionConfig {
     }
 };
 
-// 复筛阈值（ROI 传统视觉）。数据集中目标含绿色圆灯与高亮灯条，
-// 判据：ROI 内绿色像素占比或高亮像素占比达到下限。
-struct RefineConfig {
-    double minGreenRatio = 0.001;     // ROI 内绿色像素最小占比
-    double minBrightRatio = 0.002;    // ROI 内高亮(V>200)像素最小占比
-    int minAreaPx = 200;              // ROI 面积下限
-    int maxAreaRatio = 90;            // ROI 占全图上限（%）
-};
-
+// 模型 ROI 中精调绿色圆灯，跟踪灯心并计算标定视线角。
 class VisionPipeline {
 public:
     using Clock = std::chrono::steady_clock;
@@ -96,7 +94,7 @@ private:
     void recordLatency(double ms);
 
     VisionConfig config_;
-    RefineConfig refine_;
+    CameraGeometry geometry_;
 
     std::unique_ptr<IInferenceBackend> backend_;
     TargetTracker tracker_;

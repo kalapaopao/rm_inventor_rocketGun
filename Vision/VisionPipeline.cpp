@@ -10,44 +10,13 @@
 #include <opencv2/imgproc.hpp>
 #include "OnnxRuntimeBackend.hpp"
 #include "Preprocess.hpp"
+#include "../Camera/AimOverlay.hpp"
 
 namespace vision {
 
 namespace {
 
-// ROI 传统视觉复筛（方案 §5.3）：裁剪检测框，用绿色圆灯与高亮灯条
-// 的颜色/亮度判据确认这是"装甲板+灯条+圆灯"目标而不是误检。
-bool refineDetection(const cv::Mat& bgr, const Detection& det,
-                     const RefineConfig& cfg) {
-    const int x1 = std::max(0, static_cast<int>(det.x1));
-    const int y1 = std::max(0, static_cast<int>(det.y1));
-    const int x2 = std::min(bgr.cols - 1, static_cast<int>(det.x2));
-    const int y2 = std::min(bgr.rows - 1, static_cast<int>(det.y2));
-    const int w = x2 - x1 + 1;
-    const int h = y2 - y1 + 1;
-    if (w < 4 || h < 4) return false;
-    if (w * h < cfg.minAreaPx) return false;
-    if (w * h > bgr.total() * cfg.maxAreaRatio / 100.0) return false;
-
-    cv::Mat roi = bgr(cv::Rect(x1, y1, w, h));
-    cv::Mat hsv;
-    cv::cvtColor(roi, hsv, cv::COLOR_BGR2HSV);
-
-    // 绿色圆灯：OpenCV 绿色 Hue 约 35..85。
-    cv::Mat green;
-    cv::inRange(hsv, cv::Scalar(35, 60, 60), cv::Scalar(85, 255, 255), green);
-    const double greenRatio =
-        static_cast<double>(cv::countNonZero(green)) / static_cast<double>(roi.total());
-
-    // 高亮灯条：V 通道阈值。
-    std::vector<cv::Mat> hsvCh;
-    cv::split(hsv, hsvCh);
-    const double brightRatio = static_cast<double>(
-        cv::countNonZero(hsvCh[2] > 200)) / static_cast<double>(roi.total());
-
-    return greenRatio >= cfg.minGreenRatio || brightRatio >= cfg.minBrightRatio;
-}
-
+// 叠框始终使用原图像素坐标，不与去畸变后的视线角混用。
 void drawOverlay(cv::Mat& image, const VisionResult& result) {
     for (const Detection& d : result.detections) {
         const cv::Scalar color = d.refinePassed
@@ -57,6 +26,12 @@ void drawOverlay(cv::Mat& image, const VisionResult& result) {
                       cv::Point(static_cast<int>(d.x1), static_cast<int>(d.y1)),
                       cv::Point(static_cast<int>(d.x2), static_cast<int>(d.y2)),
                       color, 2);
+        if (d.lightRefined) {
+            cv::circle(image, {cvRound(d.lightX), cvRound(d.lightY)},
+                       std::max(1, cvRound(d.lightRadius)), cv::Scalar(0,255,0), 2);
+            cv::drawMarker(image, {cvRound(d.lightX), cvRound(d.lightY)},
+                           cv::Scalar(0,255,255), cv::MARKER_CROSS, 10, 1);
+        }
         std::ostringstream label;
         label << std::fixed << std::setprecision(2) << d.score;
         cv::putText(image, label.str(),
@@ -76,6 +51,7 @@ void drawOverlay(cv::Mat& image, const VisionResult& result) {
         cv::line(image, cur, fut, cv::Scalar(220, 220, 60), 1, cv::LINE_AA);
     }
 
+    drawCentreCrosshair(image);
     const VisionStats& s = result.stats;
     const int baseline = std::max(24, image.rows - 110);
     const auto line = [&](int idx, const std::string& text) {
@@ -118,6 +94,10 @@ bool VisionPipeline::start() {
         std::cerr << "[VisionPipeline] unsupported backend: " << config_.backend << '\n';
         return false;
     }
+    if (config_.calibrationEnabled && !geometry_.load(config_.calibrationFile)) {
+        std::cerr << "[Calibration] invalid intrinsics: " << config_.calibrationFile << '\n';
+        return false;
+    }
     backend_ = std::make_unique<OnnxRuntimeBackend>();
     if (!backend_->load(config_.modelPath)) {
         std::cerr << "[VisionPipeline] model load failed: " << config_.modelPath << '\n';
@@ -134,6 +114,8 @@ bool VisionPipeline::start() {
                       << config_.inputWidth << "x" << config_.inputHeight << '\n';
         }
     }
+    config_.inputWidth = ort->inputWidth();
+    config_.inputHeight = ort->inputHeight();
     tracker_.configure(config_.trackerConfig());
 
     // ORT 首次推理要分配内存/跑一遍图优化（实测约 240ms），用空图预热 3 次，
@@ -225,6 +207,14 @@ void VisionPipeline::workLoop() {
 
 void VisionPipeline::processOne(cv::Mat& frame, Clock::time_point captureTimestamp,
                                 float captureFps) {
+    if (config_.calibrationEnabled && frame.size() != geometry_.imageSize()) {
+        std::cerr << "[Calibration] frame size differs from calibration; result invalid\n";
+        tracker_.reset();
+        VisionResult invalid;
+        invalid.captureTimestamp = captureTimestamp;
+        publishResult(std::move(invalid));
+        return;
+    }
     // ---- 预处理 ----
     const auto tPre0 = Clock::now();
     LetterboxParams params;
@@ -257,7 +247,7 @@ void VisionPipeline::processOne(cv::Mat& frame, Clock::time_point captureTimesta
 
     for (Detection& d : detections) {
         d.refinePassed = !config_.enableRefine ||
-                         refineDetection(frame, d, refine_);
+                         refineGreenLight(frame, d, config_.greenLight);
     }
     // 未通过复筛的框不参与跟踪。
     std::vector<Detection> valid;
@@ -306,10 +296,25 @@ void VisionPipeline::processOne(cv::Mat& frame, Clock::time_point captureTimesta
         }
     }
 
-    result.annotated = frame.clone();  // 供显示/录像的叠框副本
-    drawOverlay(result.annotated, result);
     result.detections = std::move(detections);
     result.target = target;
+    result.yawOffsetValid = target.confirmed && target.missedFrames == 0 &&
+        std::isfinite(target.currentX) && target.currentX >= 0 && target.currentX < frame.cols;
+    result.yawOffsetPixels = target.currentX - (frame.cols / 2 + config_.yawAimOffsetPx);
+    if (config_.calibrationEnabled && target.confirmed) {
+        cv::Point2d angle;
+        result.currentAnglesValid = geometry_.angles({target.currentX, target.currentY}, frame.size(), angle);
+        if (result.currentAnglesValid) {
+            result.currentYaw = angle.x; result.currentPitch = angle.y;
+        }
+        result.futureAnglesValid = target.predictionValid &&
+            geometry_.angles({target.futureX, target.futureY}, frame.size(), angle);
+        if (result.futureAnglesValid) {
+            result.futureYaw = angle.x; result.futurePitch = angle.y;
+        }
+    }
+    result.annotated = frame.clone();  // 供显示/录像的叠框副本
+    drawOverlay(result.annotated, result);
     result.captureTimestamp = captureTimestamp;
     publishResult(std::move(result));
 }

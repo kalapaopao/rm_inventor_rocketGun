@@ -4,19 +4,19 @@ camera:
   device_index: 0
   width: 1440
   height: 1080
-  exposure_time: 2500.0
+  exposure_time: 3500.0
   gain: 9.0
   grab_timeout_ms: 100
   acquisition_frame_rate_enable: 0
   adc_bit_depth: 12
   bayer_quality: 0
   window_name: "Hikrobot Camera"
-  record_seconds: 10.0
+  record_seconds: 60.0
 
 # 视觉管线（docs/海康相机目标识别接入方案.md §8）。
 # enabled: 1 时启用推理叠框；0 时行为与纯取流完全一致。
 vision:
-  enabled: 0
+  enabled: 1
   backend: "onnxruntime_cpu"
   model_path: "D:/study/LicheeRV/resouce/dataset_raw/gc4653_20261027_session_3201/model/best.onnx"
   input_width: 640
@@ -24,8 +24,19 @@ vision:
   confidence_threshold: 0.35
   nms_threshold: 0.45
   enable_refine: 1
+  calibration:
+    enabled: 1
+    file: "../camera_intrinsics.yaml" # relative to this config, not process cwd
+  green_light:
+    hue_min: 35
+    hue_max: 85
+    saturation_min: 60
+    value_min: 60
+    min_area_px: 8.0
+    min_circularity: 0.65
+    min_axis_ratio: 0.65
   enable_tracker: 1
-  prediction_horizon_seconds: 8.0
+  prediction_horizon_seconds: 5.0
   max_prediction_seconds: 10.0
   lost_timeout_ms: 250
   min_confirm_frames: 3
@@ -33,3 +44,5 @@ vision:
   serial_port: ""
   serial_baud: 115200
   serial_period_ms: 50
+  serial_max_age_ms: 500
+  yaw_aim_offset_px: 0.0 # target line = original image centre + offset; right positive

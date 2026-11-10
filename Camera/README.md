@@ -82,6 +82,8 @@ YOLO26 目标检测 + ROI 复筛 + 卡尔曼跟踪见 `Vision/` 与
   `-DONNXRUNTIME_ROOT=/path` 覆盖）。缺包时 `show` 仍编译为纯取流程序；
 - `prediction_horizon_seconds` 等预测参数修改后无需重新编译；
 - 单图推理测试：`build/Vision/vision_single_test <model.onnx> <image> [conf]`；
-- `enable_serial: 1` 时按 `serial_port` 固定周期发送目标状态
-  （帧格式见 `Vision/SerialOutput.hpp` 注释，默认关闭）。
+- `enable_serial: 1` 时按 `serial_port` 固定周期发送当前水平像素偏差
+  （8字节帧、丢目标/过期停发，默认关闭；详见 `docs/SerialYawProtocol.md`）。
+- 画面左上角显示待发 `yaw_offset_px`、串口状态和最近成功写出的参数；
+  `last TX` 不代表下位机已确认接收。
 
