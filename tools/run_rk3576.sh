@@ -29,7 +29,7 @@ export LD_LIBRARY_PATH="$LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export MVCAM_COMMON_RUNENV="$MVS_ROOT/lib"
 
 REBUILD=0
-if [ "${1:-}" = --rebuild ]; then REBUILD=1; shift; fi
+if [ "${1:-}" = --build ] || [ "${1:-}" = --rebuild ]; then REBUILD=1; shift; fi
 
 NEED_REBUILD=0
 if [ "$REBUILD" -eq 1 ]; then

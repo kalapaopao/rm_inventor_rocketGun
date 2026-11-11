@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 海康相机一键构建 + 运行（WSL / 原生 Linux 通用）
 #
-#   ./run.sh                预览窗口 + 按 r 录像，q 退出
+#   ./run.sh                直接运行已有 build/Camera/show（不编译）
+#   ./run.sh --build        重新配置并编译后运行
 #   ./run.sh --recording    按配置 record_seconds 录一段就退出
 #   ./run.sh --calib        相机标定（s 保存 / d 删除 / Esc 结束并标定）
 #   ./run.sh -h             查看程序自己的参数
@@ -14,6 +15,15 @@
 #      libMediaProcess.so，它依赖 MVS 自带的 LIBSWSCALE_6，
 #      系统里的 libswscale 是 5，不指过去就会静默降级成 "转换失败"。
 set -uo pipefail
+
+BUILD_REQUESTED=0
+ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --build|--rebuild) BUILD_REQUESTED=1 ;;
+    *) ARGS+=("$arg") ;;
+  esac
+done
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD="$HERE/build"
@@ -62,8 +72,10 @@ if [ "$IS_WSL" -eq 1 ] && ! have_camera && [ -n "$USBIPD" ]; then
 fi
 
 # ---------- 构建 ----------
-cmake -S "$HERE" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null || exit 1
-cmake --build "$BUILD" -j"$(nproc)" || exit 1
+if [ "$BUILD_REQUESTED" -eq 1 ] || [ ! -x "$BUILD/Camera/show" ]; then
+  cmake -S "$HERE" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null || exit 1
+  cmake --build "$BUILD" -j"$(nproc)" || exit 1
+fi
 
 BIN="$BUILD/Camera/show"
 [ -x "$BIN" ] || { echo "[run] 没找到 $BIN" >&2; exit 1; }
@@ -87,4 +99,4 @@ if [ "${1:-}" = "--calib" ]; then
   exec "${ENV_PREFIX[@]}" "$CALIB_BIN"
 fi
 
-exec "${ENV_PREFIX[@]}" "$BIN" "$@"
+exec "${ENV_PREFIX[@]}" "$BIN" "${ARGS[@]}"
