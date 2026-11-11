@@ -110,6 +110,9 @@ public:
     }
 
     void stop() {
+        // visionLoop() 的循环条件是 !stopRequested_；只置 stopping_ 会让它
+        // 永远不退出，join() 挂死（--recording 到点后进程无法结束）。
+        stopRequested_.store(true, std::memory_order_relaxed);
         {
             std::lock_guard<std::mutex> lock(mutex_);
             stopping_ = true;
