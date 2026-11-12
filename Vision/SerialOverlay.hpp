@@ -13,9 +13,10 @@ inline void drawSerialPanel(cv::Mat& image, const VisionResult& result,
     if (valid) candidate << std::showpos << yaw;
     else candidate << "N/A (no fresh target)";
     sent << "Serial " << (!enabled ? "OFF" : (status.running ? "ON" : "STOPPED"))
-         << " | last TX yaw_px: ";
-    if (status.hasLastSent) sent << std::showpos << status.lastYaw;
-    else sent << "N/A";
+         << " | last TX: ";
+    if (!enabled) sent << "N/A";
+    else if (!status.lastTargetValid) sent << "TARGET=0 (none)";
+    else sent << "TARGET=1 yaw=" << std::showpos << status.lastYaw;
     counts << "TX frames: " << status.sent << " errors: " << status.errors;
     const std::string lines[] = {candidate.str(), sent.str(), counts.str()};
     for (int i=0; i<3; ++i) {

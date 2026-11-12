@@ -36,7 +36,7 @@ vision:
   lost_timeout_ms: 250
   min_confirm_frames: 3
   enable_serial: 0
-  serial_port: ""
+  serial_port: "/dev/ttyUSB0"   # 板端 USB-TTL 转接板（插上后 ls /dev/ttyUSB* 确认）
   serial_baud: 115200
   serial_period_ms: 50
   serial_max_age_ms: 500

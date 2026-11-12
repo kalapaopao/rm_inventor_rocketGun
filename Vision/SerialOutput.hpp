@@ -1,19 +1,20 @@
 #pragma once
 
-// TX-only: 8 bytes FF | int16 yaw_px LE | 00 00 00 00 | 0D.
-// Current filtered pixel offset, right positive. Invalid/stale results send nothing.
-// No checksum in this compatibility protocol. MCU MUST enforce receive timeout.
-// See docs/SerialYawProtocol.md; not compatible with the former 20-byte packet.
+// TX-only 串口发送线程，协议 v1 定长 6 字节：
+//   A5 | TARGET(0/1) | int16 yaw_px LE | CRC16-Modbus LE
+// 每个周期都发一帧：有新鲜目标发 TARGET=1（含有效 0），否则发 TARGET=0。
+// 这样电控能区分“链路活着但无目标”和“链路断开”，无需靠停发猜。
+// 电控仍必须实现独立接收超时。协议文档：docs/串口通讯协议_电控对接.md
 
 #include <atomic>
+#include <condition_variable>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 
 #include "DetectionTypes.hpp"
 #include "SerialProtocol.hpp"
-#include <condition_variable>
-#include <mutex>
 
 namespace vision {
 
@@ -27,8 +28,11 @@ struct SerialConfig {
 struct SerialStatus {
     bool running = false;
     std::uint64_t sent = 0, errors = 0;
+    // 最近一次“有目标”帧的偏差；hasLastSent 仅在该值有效时为 true。
     bool hasLastSent = false;
     std::int16_t lastYaw = 0;
+    // 最近一次成功写出的帧是否携带有效目标（用于显示）。
+    bool lastTargetValid = false;
 };
 
 class SerialOutput {
@@ -53,7 +57,7 @@ public:
 private:
     void loop();
     bool openPort();
-    bool writePacket(const YawPacket& packet);
+    bool writePacket(const Frame& packet);
 
     SerialConfig config_;
     ResultProvider provider_;
@@ -66,6 +70,7 @@ private:
     mutable std::mutex statusMutex_;
     bool hasLastSent_ = false;
     std::int16_t lastYaw_ = 0;
+    bool lastTargetValid_ = false;
     std::mutex waitMutex_;
     std::condition_variable wake_;
 };

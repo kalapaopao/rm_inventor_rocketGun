@@ -36,7 +36,8 @@ bool SerialOutput::start(const SerialConfig& config, ResultProvider provider) {
     provider_ = std::move(provider);
     if (!openPort()) return false;
     sentFrames_.store(0); sendErrors_.store(0);
-    { std::lock_guard<std::mutex> lock(statusMutex_); hasLastSent_ = false; }
+    { std::lock_guard<std::mutex> lock(statusMutex_);
+      hasLastSent_ = false; lastYaw_ = 0; lastTargetValid_ = false; }
     stopRequested_.store(false);
     running_.store(true);
     thread_ = std::thread(&SerialOutput::loop, this);
@@ -88,10 +89,11 @@ SerialStatus SerialOutput::status() const {
     out.errors = sendErrors_.load();
     std::lock_guard<std::mutex> lock(statusMutex_);
     out.hasLastSent = hasLastSent_; out.lastYaw = lastYaw_;
+    out.lastTargetValid = lastTargetValid_;
     return out;
 }
 
-bool SerialOutput::writePacket(const YawPacket& packet) {
+bool SerialOutput::writePacket(const Frame& packet) {
     size_t offset = 0;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
     while (!stopRequested_.load() && std::chrono::steady_clock::now() < deadline) {
@@ -119,18 +121,28 @@ void SerialOutput::loop() {
     while (!stopRequested_.load()) {
         const auto next = std::chrono::steady_clock::now() + period;
         VisionResult result;
-        std::int16_t yaw = 0;
+        bool haveResult = false;
         try {
-            if (provider_(result) && selectYaw(result, std::chrono::steady_clock::now(),
-                                               config_.maxAgeMs, yaw) && writePacket(encodeYaw(yaw))) {
-                { std::lock_guard<std::mutex> lock(statusMutex_);
-                  lastYaw_ = yaw; hasLastSent_ = true; }
-                sentFrames_.fetch_add(1);
-            }
+            haveResult = provider_(result);
         } catch (const std::exception& e) {
             ++sendErrors_;
             std::cerr << "[SerialOutput] provider failed: " << e.what() << '\n';
-            break;
+        }
+        bool targetValid = false;
+        std::int16_t yaw = 0;
+        if (haveResult) {
+            targetValid = selectYaw(result, std::chrono::steady_clock::now(),
+                                    config_.maxAgeMs, yaw);
+        }
+        if (!targetValid) yaw = 0;  // 无新鲜目标：发 TARGET=0，绝不伪装有效零
+        // 每周期都发一帧：TARGET=0 帧让电控知道链路仍在，只是当前没目标。
+        if (writePacket(encodeFrame(targetValid, yaw))) {
+            {
+                std::lock_guard<std::mutex> lock(statusMutex_);
+                lastTargetValid_ = targetValid;
+                if (targetValid) { lastYaw_ = yaw; hasLastSent_ = true; }
+            }
+            sentFrames_.fetch_add(1);
         }
         std::unique_lock<std::mutex> lock(waitMutex_);
         wake_.wait_until(lock, next, [this] { return stopRequested_.load(); });
