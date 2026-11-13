@@ -1,0 +1,25 @@
+[Unit]
+Description=Dart Rack Vision Autostart (RK3576)
+After=network.target display-manager.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=Tronlong
+Group=Tronlong
+WorkingDirectory=/rm_inventor_fly
+Environment=HOME=/home/Tronlong
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/Tronlong/.Xauthority
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStartPre=/bin/sh /rm_inventor_fly/tools/wait_hik_camera.sh 30
+ExecStart=/usr/bin/stdbuf -oL -eL /bin/bash /rm_inventor_fly/tools/run_rk3576.sh --window
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+KillSignal=SIGINT
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical.target
