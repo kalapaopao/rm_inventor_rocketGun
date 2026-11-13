@@ -13,9 +13,7 @@ camera:
   window_name: "Hikrobot Camera"
   record_seconds: 60.0
 
-# 视觉管线（docs/海康相机目标识别接入方案.md §8）。
-# enabled: 1 时启用传统圆灯检测；0 时保持纯取流。
-vision:
+# 视觉管线（docs/海康相机目标识别接入方案.md §8）�?# enabled: 1 时启用传统圆灯检测；0 时保持纯取流�?vision:
   enabled: 1
   backend: "traditional"
   calibration:
@@ -35,9 +33,8 @@ vision:
   max_prediction_seconds: 10.0
   lost_timeout_ms: 250
   min_confirm_frames: 3
-  enable_serial: 0
-  serial_port: "/dev/ttyUSB0"   # 板端 USB-TTL 转接板（插上后 ls /dev/ttyUSB* 确认）
-  serial_baud: 115200
+  enable_serial: 1
+  serial_port: "/dev/ttyUSB0"   # 板端 USB-TTL 转接板（插上�?ls /dev/ttyUSB* 确认�?  serial_baud: 115200
   serial_period_ms: 50
   serial_max_age_ms: 500
   yaw_aim_offset_px: 0.0 # target line = original image centre + offset; right positive
