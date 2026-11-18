@@ -29,6 +29,48 @@ if [ "$ACTION" = "pause" ]; then
     KEEP_AUTOSTART=1
 fi
 
+usage() {
+    cat <<'EOF'
+用法: bash tools/dart_vision.sh <动作>
+
+动作:
+  status    查看运行状态 + 最近日志 + 进程（不带参数时的默认动作）
+  stop      停止，并取消开机自启（重启板子也不会自动运行）
+  pause     只停本次，保留开机自启（下次开机仍自动运行）
+  start     启动，并恢复开机自启
+  restart   重启（改配置、换串口后用）
+  help      显示本帮助（也可用 -h / --help）
+
+为什么不能直接 kill:
+  服务单元是 Restart=always，进程被杀后约 5 秒会被 systemd 自动拉起；
+  必须用 systemctl stop（本脚本已封装），stop 还会清理残留的手动进程。
+
+示例:
+  bash tools/dart_vision.sh            # 看状态
+  bash tools/dart_vision.sh stop       # 彻底停掉
+  bash tools/dart_vision.sh pause      # 临时让出相机（跑标定 / --serial-test）
+  bash tools/dart_vision.sh start      # 恢复运行
+
+环境变量（一般不用设）:
+  DART_VISION_SERVICE  服务单元名，默认 dart-vision.service
+  DART_VISION_BIN      可执行文件路径，默认 <项目根>/build/Camera/show
+EOF
+}
+
+# 帮助与参数校验不需要 root，放在提权之前。
+case "$ACTION" in
+    -h | --help | help | '?')
+        usage
+        exit 0
+        ;;
+    status | stop | start | restart) ;;
+    *)
+        echo "[dart] 未知动作: $ACTION" >&2
+        usage >&2
+        exit 2
+        ;;
+esac
+
 if [ "$(id -u)" -ne 0 ]; then
     echo "[dart] 需要 root 权限，通过 sudo 重新执行…"
     passthrough=(DART_VISION_SERVICE="$SERVICE")
@@ -109,6 +151,8 @@ do_status() {
     echo "[dart] 开机自启: $(systemctl is-enabled "$SERVICE" 2>/dev/null || echo unknown)"
     echo "[dart] 进程:"
     show_strays
+    echo
+    echo "[dart] 全部命令: bash $SELF help"
 }
 
 do_stop() {
@@ -172,16 +216,11 @@ do_restart() {
     fi
 }
 
-usage() {
-    sed -n '2,20p' "$SELF" | sed 's/^# \{0,1\}//'
-}
-
 case "$ACTION" in
     status) do_status ;;
     stop) do_stop ;;
     start) do_start ;;
     restart) do_restart ;;
-    -h | --help | help) usage ;;
     *)
         echo "[dart] 未知动作: $ACTION" >&2
         usage >&2
