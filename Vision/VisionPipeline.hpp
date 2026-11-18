@@ -36,6 +36,7 @@ struct VisionConfig {
     int minConfirmFrames = 3;
     bool enableSerial = false;
     std::string serialPort;      // enable_serial=1 时必填，如 /dev/ttyUSB0
+    std::string serialBackend = "auto";  // auto（默认）/ tty / ch341
     int serialBaud = 115200;
     int serialPeriodMs = 50;
     int serialMaxAgeMs = 500;

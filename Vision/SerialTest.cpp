@@ -119,6 +119,8 @@ int main() {
         master = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK);
         require(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0, "PTY creation");
         SerialConfig config; config.port = ptsname(master); config.periodMs = 10; config.maxAgeMs = 100;
+        // 本用例验证 tty 语义（PTY 路径），显式锁定后端，避免 auto 在节点失效时回退到 CH341。
+        config.backend = SerialBackend::Tty;
         std::mutex mutex;
         result.captureTimestamp = std::chrono::steady_clock::now();
         result.yawOffsetPixels = -123; result.yawOffsetValid = true;
@@ -172,8 +174,18 @@ int main() {
         config.baud = 12345;
         require(!serial.start(config, [](VisionResult&) { return false; }), "unsupported baud accepted");
 
+        // ---- 后端名称解析 ----
+        {
+            SerialBackend backend = SerialBackend::Auto;
+            require(parseSerialBackend("", backend) && backend == SerialBackend::Auto, "empty->auto");
+            require(parseSerialBackend("AUTO", backend) && backend == SerialBackend::Auto, "AUTO->auto");
+            require(parseSerialBackend("tty", backend) && backend == SerialBackend::Tty, "tty parse");
+            require(parseSerialBackend("CH341", backend) && backend == SerialBackend::Ch341, "CH341 parse");
+            require(!parseSerialBackend("bogus", backend), "bogus backend accepted");
+        }
+
         std::cout << "PASS: 6-byte frames/CRC16/decode, yaw rounding+saturation, "
-                     "stale->TARGET=0, invalid->TARGET=0, valid zero, PTY TX, status, disconnect, baud\n";
+                     "stale->TARGET=0, invalid->TARGET=0, valid zero, PTY TX, status, disconnect, baud, backend\n";
         return 0;
     } catch (const std::exception& e) {
         if (master >= 0) close(master);

@@ -5,16 +5,24 @@
 // 每个周期都发一帧：有新鲜目标发 TARGET=1（含有效 0），否则发 TARGET=0。
 // 这样电控能区分“链路活着但无目标”和“链路断开”，无需靠停发猜。
 // 电控仍必须实现独立接收超时。协议文档：docs/串口通讯协议_电控对接.md
+//
+// 具体“怎么写上线”由 SerialTransport 决定：
+//   Auto（默认）—— 设备节点存在走内核 tty，否则回退 libusb 直驱 CH341/CH340。
+// 板端内核未编 ch341 驱动，CH341 转接板没有 /dev/ttyUSB0，因此需要该回退；
+// 换 CP2102/FT232 后节点存在，自动走 tty，无需改配置。
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 
 #include "DetectionTypes.hpp"
 #include "SerialProtocol.hpp"
+#include "SerialTransport.hpp"
 
 namespace vision {
 
@@ -23,6 +31,7 @@ struct SerialConfig {
     int baud = 115200;
     int periodMs = 50;         // 固定发送周期
     int maxAgeMs = 500;
+    SerialBackend backend = SerialBackend::Auto;  // 传输后端选择
 };
 
 struct SerialStatus {
@@ -33,6 +42,8 @@ struct SerialStatus {
     std::int16_t lastYaw = 0;
     // 最近一次成功写出的帧是否携带有效目标（用于显示）。
     bool lastTargetValid = false;
+    // 实际使用的传输后端，如 "tty:/dev/ttyUSB0" / "libusb:ch341"。
+    std::string transport;
 };
 
 class SerialOutput {
@@ -56,12 +67,14 @@ public:
 
 private:
     void loop();
-    bool openPort();
+    bool openTransport();
     bool writePacket(const Frame& packet);
 
     SerialConfig config_;
     ResultProvider provider_;
-    int fd_ = -1;
+    std::unique_ptr<SerialTransport> transport_;
+    std::string transportName_;
+    std::string writeError_;
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stopRequested_{false};

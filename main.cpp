@@ -99,6 +99,7 @@ int main(int argc, char* argv[]) {
     if (serialTest) {
         vision::LinkTestConfig link;
         link.port = config.vision.serialPort;
+        link.backend = config.vision.serialBackend;
         link.baud = config.vision.serialBaud;
         link.periodMs = config.vision.serialPeriodMs;
         return vision::runSerialLinkTest(link) == 0 ? 0 : 1;

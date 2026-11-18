@@ -54,6 +54,11 @@ int runSerialLinkTest(const LinkTestConfig& config) {
     serial.baud = config.baud;
     serial.periodMs = config.periodMs;
     serial.maxAgeMs = 500;
+    if (!parseSerialBackend(config.backend, serial.backend)) {
+        std::cerr << "[link] FAIL：未知 serial_backend '" << config.backend
+                  << "'（可选 auto / tty / ch341）\n";
+        return 1;
+    }
 
     // 与正式路径同一编码函数：TARGET=0 时 YAW 强制 0。
     const Frame frame = encodeFrame(false, 0);
@@ -67,9 +72,9 @@ int runSerialLinkTest(const LinkTestConfig& config) {
     SerialOutput output;
     // provider 恒返回 false（没有新鲜目标）→ 与正式运行中丢目标时同一条路径：每周期发 TARGET=0。
     if (!output.start(serial, [](VisionResult&) { return false; })) {
-        std::cerr << "[link] FAIL：打不开 " << config.port
-                  << "。CH340/CH341 在板端无内核驱动，需换 CP2102 / FT232；"
-                     "详见 docs/串口链路测试.md\n";
+        std::cerr << "[link] FAIL：正式发送模块打不开串口（原因见上方 [SerialOutput] 行）。\n"
+                  << "[link] serial_backend=" << config.backend << "，port=" << config.port
+                  << "；可改 camera_config.yaml 的 serial_backend（auto/tty/ch341）\n";
         return 1;
     }
 

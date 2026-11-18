@@ -1,0 +1,13 @@
+# CH340/CH341 USB-TTL 转接板（VID 1a86）——允许普通用户直接读写设备节点
+#
+# 板端内核未编 ch341 驱动（CONFIG_USB_SERIAL_CH341 is not set），串口发送走
+# libusb 用户态直驱，因此需要普通用户（服务运行身份 Tronlong）能打开该 USB 设备。
+# 没有这条规则时 /dev/bus/usb/00X/00Y 是 crw-rw-r-- root root，libusb_open 会失败，
+# 表现为 [SerialOutput] 打不开串口。
+#
+# 安装位置：/etc/udev/rules.d/99-ch341.rules
+# 生效：sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=usb
+
+SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="5523", MODE="0666", GROUP="plugdev"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="7522", MODE="0666", GROUP="plugdev"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="7523", MODE="0666", GROUP="plugdev"

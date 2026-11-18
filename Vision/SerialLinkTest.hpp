@@ -21,6 +21,7 @@ namespace vision {
 
 struct LinkTestConfig {
     std::string port;   // 取自 vision.serial_port
+    std::string backend = "auto";  // 取自 vision.serial_backend（auto/tty/ch341）
     int baud = 115200;  // 取自 vision.serial_baud
     int periodMs = 50;  // 取自 vision.serial_period_ms
 };

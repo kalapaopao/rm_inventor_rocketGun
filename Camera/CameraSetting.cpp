@@ -407,6 +407,9 @@ bool CameraConfig::load(const std::string& path) {
             v.enableSerial = serial != 0;
         }
         if (!visionNode["serial_port"].empty()) visionNode["serial_port"] >> v.serialPort;
+        if (!visionNode["serial_backend"].empty()) {
+            visionNode["serial_backend"] >> v.serialBackend;
+        }
         if (!visionNode["serial_baud"].empty()) {
             int baud = v.serialBaud;
             visionNode["serial_baud"] >> baud;
@@ -567,6 +570,13 @@ bool CameraSetting::run() {
             serialConfig.baud = config_.vision.serialBaud;
             serialConfig.periodMs = config_.vision.serialPeriodMs;
             serialConfig.maxAgeMs = config_.vision.serialMaxAgeMs;
+            if (!vision::parseSerialBackend(config_.vision.serialBackend,
+                                            serialConfig.backend)) {
+                std::cerr << "Warning: unknown serial_backend '"
+                          << config_.vision.serialBackend
+                          << "', falling back to auto.\n";
+                serialConfig.backend = vision::SerialBackend::Auto;
+            }
             if (!serial_->start(serialConfig, [this](vision::VisionResult& r) {
                     return vision_ != nullptr && vision_->getLatestResult(r);
                 })) {

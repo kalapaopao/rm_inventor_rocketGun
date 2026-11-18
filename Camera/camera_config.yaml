@@ -37,6 +37,7 @@ vision:
   min_confirm_frames: 3
   enable_serial: 1
   serial_port: "/dev/ttyUSB0"   # 板端 USB-TTL 转接板（插上后 ls /dev/ttyUSB* 确认）
+  serial_backend: "auto"        # auto: 有该节点走内核 tty，否则用 libusb 直驱 CH341/CH340；可选 tty / ch341
   serial_baud: 115200
   serial_period_ms: 50
   serial_max_age_ms: 500

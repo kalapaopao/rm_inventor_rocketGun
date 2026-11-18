@@ -10,6 +10,7 @@
 *.yml text eol=lf
 *.json text eol=lf
 *.md text eol=lf
+*.rules text eol=lf
 CMakeLists.txt text eol=lf
 *.cmake text eol=lf
 *.bat text eol=crlf
