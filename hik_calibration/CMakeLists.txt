@@ -55,3 +55,24 @@ target_compile_definitions(hik_calibration PRIVATE
 
 target_compile_options(hik_calibration PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(hik_calibration PROPERTIES BUILD_RPATH "${MVS_LIB_DIR}")
+
+# 诊断探针：打印相机寄存器在"应用标定配置前后"的差异，不做取流。
+# 用于确认 hik_calibration 应用的是本模块的 config.yaml，而不是 Camera/camera_config.yaml。
+add_executable(probe_camera_settings
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/probe_camera_settings.cpp"
+)
+target_include_directories(probe_camera_settings PRIVATE
+    "${MVS_INCLUDE_DIR}"
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(probe_camera_settings PRIVATE
+    "${MVS_LIBRARY}"
+    ${OpenCV_LIBS}
+    Threads::Threads
+    ${CMAKE_DL_LIBS}
+)
+target_compile_definitions(probe_camera_settings PRIVATE
+    HIK_CALIBRATION_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config.yaml"
+)
+target_compile_options(probe_camera_settings PRIVATE -Wall -Wextra -Wpedantic)
+set_target_properties(probe_camera_settings PROPERTIES BUILD_RPATH "${MVS_LIB_DIR}")
